@@ -3,6 +3,8 @@ name: CI/CD Pipeline
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
 
 env:
   IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/my-app
@@ -23,7 +25,7 @@ jobs:
           node-version: '20'
 
       - name: Install dependencies
-        run: npm install
+        run: npm ci
 
       - name: Run tests
         run: npm test
@@ -33,6 +35,7 @@ jobs:
     name: Build & Push Docker Image
     runs-on: ubuntu-latest
     needs: test
+    if: github.event_name == 'push'
 
     steps:
       - name: Checkout code
@@ -63,6 +66,7 @@ jobs:
     name: Deploy to Oracle Cloud VM
     runs-on: ubuntu-latest
     needs: build-and-push
+    if: github.event_name == 'push'
 
     steps:
       - name: SSH & deploy
@@ -71,12 +75,14 @@ jobs:
           host: ${{ secrets.SSH_HOST }}
           username: ${{ secrets.SSH_USER }}
           key: ${{ secrets.SSH_PRIVATE_KEY }}
+          envs: IMAGE_NAME
           script: |
-            docker pull ${{ env.IMAGE_NAME }}:latest
+            docker pull ${IMAGE_NAME}:latest
             docker stop app || true
             docker rm app || true
             docker run -d \
               --name app \
               --restart unless-stopped \
               -p 80:3000 \
-              ${{ env.IMAGE_NAME }}:latest
+              ${IMAGE_NAME}:latest
+            docker image prune -f
