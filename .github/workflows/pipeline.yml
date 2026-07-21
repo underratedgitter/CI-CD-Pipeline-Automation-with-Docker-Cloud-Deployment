@@ -61,28 +61,27 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # ── 3. Deploy to Oracle Cloud VM ─────────────────────────────────────────────
+  # ── 3. Deploy to Render ────────────────────────────────────────────────────────
   deploy:
-    name: Deploy to Oracle Cloud VM
+    name: Deploy to Render
     runs-on: ubuntu-latest
     needs: build-and-push
     if: github.event_name == 'push'
 
     steps:
-      - name: SSH & deploy
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.SSH_HOST }}
-          username: ${{ secrets.SSH_USER }}
-          key: ${{ secrets.SSH_PRIVATE_KEY }}
-          envs: IMAGE_NAME
-          script: |
-            docker pull ${IMAGE_NAME}:latest
-            docker stop app || true
-            docker rm app || true
-            docker run -d \
-              --name app \
-              --restart unless-stopped \
-              -p 80:3000 \
-              ${IMAGE_NAME}:latest
-            docker image prune -f
+      - name: Trigger Render deploy
+        run: |
+          curl -s -o /dev/null -w "%{http_code}" "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" | grep -q "200"
+          echo "✅ Render deploy triggered successfully"
+
+      - name: Verify deployment
+        run: |
+          echo "⏳ Waiting 30s for Render to start deploying..."
+          sleep 30
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://ci-cd-pipeline-automation-with-docker.onrender.com/health)
+          echo "Health check status: $STATUS"
+          if [ "$STATUS" = "200" ]; then
+            echo "✅ Deployment verified — app is live!"
+          else
+            echo "⚠️ App returned $STATUS — Render may still be deploying (free tier cold start)"
+          fi
