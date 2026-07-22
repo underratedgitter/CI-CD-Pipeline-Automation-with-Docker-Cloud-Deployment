@@ -9,7 +9,7 @@ app.use(express.json());
 
 // GET / — Hello World
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'Hello World' });
+  res.json({ status: 'ok', message: 'Suraj' });
 });
 
 // GET /health — uptime & timestamp
