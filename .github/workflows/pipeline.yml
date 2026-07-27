@@ -71,8 +71,14 @@ jobs:
     steps:
       - name: Trigger Render deploy
         run: |
-          curl -s -o /dev/null -w "%{http_code}" "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" | grep -q "200"
-          echo "✅ Render deploy triggered successfully"
+          STATUS=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
+          echo "Render deploy hook status: $STATUS"
+          if [[ "$STATUS" =~ ^2[0-9]{2}$ ]]; then
+            echo "✅ Render deploy triggered successfully"
+          else
+            echo "❌ Render deploy hook failed with HTTP status $STATUS"
+            exit 1
+          fi
 
       - name: Verify deployment
         run: |
