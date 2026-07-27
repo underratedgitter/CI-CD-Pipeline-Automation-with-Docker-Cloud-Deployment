@@ -9,7 +9,7 @@ app.use(express.json());
 
 // GET / — Hello World
 app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'Suraj' });
+  res.json({ status: 'ok', message: 'hello' });
 });
 
 // GET /health — uptime & timestamp
@@ -19,7 +19,6 @@ app.get('/health', (req, res) => {
     timestamp: new Date().toISOString(),
   });
 });
-
 // Start server only when not required by tests
 if (require.main === module) {
   app.listen(PORT, () => {
