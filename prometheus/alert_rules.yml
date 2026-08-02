@@ -1,0 +1,62 @@
+groups:
+  - name: node_app_alerts
+    rules:
+
+      # ── App availability ───────────────────────────────────────────────────────
+      - alert: AppDown
+        expr: up{job="node-app"} == 0
+        for: 1m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Node.js app is down"
+          description: "Prometheus cannot reach the /metrics endpoint — app may have crashed."
+
+      # ── Error rate ─────────────────────────────────────────────────────────────
+      - alert: HighErrorRate
+        expr: |
+          rate(http_requests_total{status_code=~"5.."}[5m])
+          /
+          rate(http_requests_total[5m]) > 0.05
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "High HTTP 5xx error rate"
+          description: "More than 5% of requests are returning 5xx errors."
+
+      # ── Latency ────────────────────────────────────────────────────────────────
+      - alert: HighLatencyP99
+        expr: |
+          histogram_quantile(0.99,
+            rate(http_request_duration_seconds_bucket[5m])
+          ) > 1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "P99 latency exceeds 1 second"
+          description: "99th percentile response time is above 1s — users are experiencing slow responses."
+
+      # ── Memory ─────────────────────────────────────────────────────────────────
+      - alert: HighHeapUsage
+        expr: |
+          nodejs_heap_size_used_bytes
+          /
+          nodejs_heap_size_total_bytes > 0.85
+        for: 3m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Node.js heap usage above 85%"
+          description: "V8 heap is nearly full — risk of out-of-memory crash."
+
+      # ── Event loop ─────────────────────────────────────────────────────────────
+      - alert: HighEventLoopLag
+        expr: nodejs_eventloop_lag_seconds > 0.1
+        for: 2m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Event loop lag above 100ms"
+          description: "The Node.js event loop is blocked — app may be unresponsive."

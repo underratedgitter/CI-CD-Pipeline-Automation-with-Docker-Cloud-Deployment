@@ -1,0 +1,21 @@
+# ── Global settings ────────────────────────────────────────────────────────────
+global:
+  scrape_interval: 15s       # How often Prometheus scrapes targets
+  evaluation_interval: 15s   # How often alert rules are evaluated
+
+# ── Alert rules ────────────────────────────────────────────────────────────────
+rule_files:
+  - 'alert_rules.yml'
+
+# ── Scrape targets ─────────────────────────────────────────────────────────────
+scrape_configs:
+  # Prometheus scrapes itself
+  - job_name: 'prometheus'
+    static_configs:
+      - targets: ['localhost:9090']
+
+  # Your Node.js app — "my-app" is the Docker Compose service name
+  - job_name: 'node-app'
+    static_configs:
+      - targets: ['my-app:3000']
+    metrics_path: '/metrics'
