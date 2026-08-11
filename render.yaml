@@ -1,0 +1,34 @@
+services:
+  # ── 1. Node.js Application ──────────────────────────────────────────────────
+  - type: web
+    name: ci-cd-pipeline-automation-app
+    runtime: docker
+    dockerfilePath: Dockerfile
+    plan: free
+    healthCheckPath: /health
+    envVars:
+      - key: PORT
+        value: "3000"
+
+  # ── 2. Prometheus Server ────────────────────────────────────────────────────
+  - type: web
+    name: prometheus-monitoring-service
+    runtime: docker
+    dockerfilePath: Dockerfile.prometheus
+    plan: free
+
+  # ── 3. Grafana Dashboard ────────────────────────────────────────────────────
+  - type: web
+    name: grafana-dashboard-service
+    runtime: docker
+    dockerfilePath: Dockerfile.grafana
+    plan: free
+    envVars:
+      - key: GF_SECURITY_ADMIN_USER
+        value: admin
+      - key: GF_SECURITY_ADMIN_PASSWORD
+        value: admin
+      - key: GF_USERS_ALLOW_SIGN_UP
+        value: "false"
+      - key: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
+        value: /var/lib/grafana/dashboards/nodejs-overview.json

@@ -1,0 +1,8 @@
+FROM prom/prometheus:latest
+
+# Copy configuration files into Prometheus image
+COPY prometheus/prometheus.yml /etc/prometheus/prometheus.yml
+COPY prometheus/alert_rules.yml /etc/prometheus/alert_rules.yml
+
+EXPOSE 9090
+CMD ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--web.enable-lifecycle"]

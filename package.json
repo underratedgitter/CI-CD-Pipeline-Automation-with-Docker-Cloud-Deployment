@@ -5,7 +5,9 @@
   "main": "app.js",
   "scripts": {
     "start": "node app.js",
-    "test": "jest --forceExit --detectOpenHandles"
+    "test": "jest --forceExit --detectOpenHandles",
+    "open": "open http://localhost:3000 http://localhost:9090 http://localhost:3001",
+    "docker:up": "colima status || colima start; docker compose up -d --build && open http://localhost:3000 http://localhost:9090 http://localhost:3001"
   },
   "dependencies": {
     "express": "^4.18.2",

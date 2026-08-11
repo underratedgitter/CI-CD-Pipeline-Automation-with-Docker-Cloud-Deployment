@@ -19,3 +19,11 @@ scrape_configs:
     static_configs:
       - targets: ['my-app:3000']
     metrics_path: '/metrics'
+
+  # Live production cloud deployment on Render
+  - job_name: 'render-app'
+    scheme: https
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['ci-cd-pipeline-automation-with-docker.onrender.com']
+
