@@ -24,6 +24,8 @@ services:
     dockerfilePath: Dockerfile.grafana
     plan: free
     envVars:
+      - key: PROMETHEUS_URL
+        value: https://prometheus-monitoring-service.onrender.com
       - key: GF_SECURITY_ADMIN_USER
         value: admin
       - key: GF_SECURITY_ADMIN_PASSWORD
@@ -32,3 +34,4 @@ services:
         value: "false"
       - key: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
         value: /var/lib/grafana/dashboards/nodejs-overview.json
+
