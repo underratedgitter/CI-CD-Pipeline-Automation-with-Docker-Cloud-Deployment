@@ -14,11 +14,13 @@ scrape_configs:
     static_configs:
       - targets: ['localhost:9090']
 
-  # Your Node.js app — "my-app" is the Docker Compose service name
-  - job_name: 'node-app'
-    static_configs:
-      - targets: ['my-app:3000']
-    metrics_path: '/metrics'
+  # Node.js app — only reachable via Docker Compose locally (my-app:3000)
+  # Commented out: this target fails on Render since 'my-app' is a Compose-only hostname.
+  # Uncomment when running locally with docker-compose up.
+  # - job_name: 'node-app'
+  #   static_configs:
+  #     - targets: ['my-app:3000']
+  #   metrics_path: '/metrics'
 
   # Live production cloud deployment on Render
   - job_name: 'render-app'
