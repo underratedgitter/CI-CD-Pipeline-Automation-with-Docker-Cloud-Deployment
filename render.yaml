@@ -16,6 +16,10 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile.prometheus
     plan: free
+    healthCheckPath: /-/healthy
+    envVars:
+      - key: PROMETHEUS_STORAGE_PATH
+        value: /tmp/prometheus
 
   # ── 3. Grafana Dashboard ────────────────────────────────────────────────────
   - type: web
@@ -35,3 +39,13 @@ services:
       - key: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
         value: /var/lib/grafana/dashboards/nodejs-overview.json
 
+  # ── 4. Keep-Alive Cron ──────────────────────────────────────────────────────
+  # Pings all 3 services every 10 min so they NEVER sleep on Render free tier.
+  # This is what keeps Prometheus alive — without it, free services sleep after
+  # 15 min of inactivity and Prometheus crashes on wake-up (storage issue).
+  - type: cron
+    name: keep-alive-pinger
+    runtime: docker
+    dockerfilePath: Dockerfile.keepalive
+    schedule: "*/10 * * * *"
+    plan: free

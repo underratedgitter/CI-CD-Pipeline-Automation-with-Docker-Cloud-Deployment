@@ -4,5 +4,15 @@ FROM prom/prometheus:latest
 COPY prometheus/prometheus.yml /etc/prometheus/prometheus.yml
 COPY prometheus/alert_rules.yml /etc/prometheus/alert_rules.yml
 
+# Create writable storage dir (Render has no persistent disk on free tier;
+# /tmp is writable but ephemeral — data resets on restart, but Prometheus stays up)
+RUN mkdir -p /tmp/prometheus
+
 EXPOSE 9090
-CMD ["--config.file=/etc/prometheus/prometheus.yml", "--storage.tsdb.path=/prometheus", "--web.enable-lifecycle"]
+
+# Use /tmp/prometheus so Render's read-only overlay FS doesn't block startup
+CMD ["--config.file=/etc/prometheus/prometheus.yml", \
+     "--storage.tsdb.path=/tmp/prometheus", \
+     "--storage.tsdb.retention.time=1d", \
+     "--web.enable-lifecycle", \
+     "--web.listen-address=0.0.0.0:9090"]

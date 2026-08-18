@@ -1,0 +1,13 @@
+FROM alpine:latest
+
+# Minimal image — just curl to ping all services
+RUN apk add --no-cache curl
+
+# This runs on cron schedule via Render
+# Pings all three services to prevent free-tier sleep
+CMD ["sh", "-c", \
+  "echo '--- Keep-Alive Ping ---' && \
+   curl -sf --max-time 30 https://ci-cd-pipeline-automation-app.onrender.com/health && echo '✓ App OK' || echo '✗ App unreachable' && \
+   curl -sf --max-time 30 https://prometheus-monitoring-service.onrender.com/-/healthy && echo '✓ Prometheus OK' || echo '✗ Prometheus unreachable' && \
+   curl -sf --max-time 30 https://grafana-dashboard-service.onrender.com/api/health && echo '✓ Grafana OK' || echo '✗ Grafana unreachable' && \
+   echo '--- Done ---'"]
