@@ -8,7 +8,7 @@ COPY prometheus/alert_rules.yml /etc/prometheus/alert_rules.yml
 # /tmp is writable but ephemeral — data resets on restart, but Prometheus stays up)
 RUN mkdir -p /tmp/prometheus
 
-EXPOSE 9090
+EXPOSE 9030
 
 # Use /tmp/prometheus so Render's read-only overlay FS doesn't block startup
 CMD ["--config.file=/etc/prometheus/prometheus.yml", \
