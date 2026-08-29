@@ -1,18 +1,29 @@
 'use strict';
 
 const express = require('express');
+const crypto = require('crypto');
 const client = require('prom-client');
+const pkg = require('./package.json');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
+const VERSION = pkg.version;
+
+// ── Request ID ───────────────────────────────────────────────────────────────
+app.use((req, res, next) => {
+  req.id = req.headers['x-request-id'] || crypto.randomUUID();
+  res.setHeader('X-Request-Id', req.id);
+  next();
+});
 
 // ── Security Headers ─────────────────────────────────────────────────────────
-app.use((req, res, next) => {
+app.use((_req, res, next) => {
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-XSS-Protection', '1; mode=block');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('X-Request-Id', _req.id);
   if (NODE_ENV === 'production') {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
   }
@@ -23,23 +34,24 @@ app.use((req, res, next) => {
 // ── Rate Limiting ────────────────────────────────────────────────────────────
 const rateLimitStore = new Map();
 const RATE_LIMIT_WINDOW = 60 * 1000;
-const RATE_LIMIT_MAX = 100;
+const RATE_LIMIT_MAX = parseInt(process.env.RATE_LIMIT_MAX || '100', 10);
 
 function rateLimit(req, res, next) {
-  if (req.path === '/health' || req.path === '/metrics') return next();
+  if (req.path === '/health' || req.path === '/metrics' || req.path === '/ready') return next();
   const clientIP = req.ip || req.connection.remoteAddress || 'unknown';
   const now = Date.now();
   if (!rateLimitStore.has(clientIP)) rateLimitStore.set(clientIP, []);
   const requests = rateLimitStore.get(clientIP).filter((t) => now - t < RATE_LIMIT_WINDOW);
   rateLimitStore.set(clientIP, requests);
   if (requests.length >= RATE_LIMIT_MAX) {
-    return res.status(429).json({ error: 'Too Many Requests', retryAfter: 60 });
+    res.setHeader('Retry-After', '60');
+    return res.status(429).json({ error: 'Too Many Requests', retryAfter: 60, requestId: req.id });
   }
   requests.push(now);
   next();
 }
 
-// Clean up every 5 min
+// Clean up every 5 min, unref so it doesn't keep the process alive
 const cleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [ip, timestamps] of rateLimitStore.entries()) {
@@ -51,11 +63,14 @@ const cleanupInterval = setInterval(() => {
 if (cleanupInterval.unref) cleanupInterval.unref();
 
 // ── CORS ─────────────────────────────────────────────────────────────────────
-app.use((req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
+app.use((_req, res, next) => {
+  const allowedOrigins = (process.env.CORS_ORIGINS || '*').split(',').map((s) => s.trim());
+  const origin = _req.headers.origin;
+  const allowed = allowedOrigins.includes('*') ? '*' : allowedOrigins.includes(origin) ? origin : null;
+  if (allowed) res.setHeader('Access-Control-Allow-Origin', allowed);
   res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Request-Id');
+  if (_req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
@@ -98,7 +113,7 @@ const appInfo = new client.Gauge({
   labelNames: ['version', 'node_version', 'environment'],
   registers: [register],
 });
-appInfo.labels(process.env.npm_package_version || '1.1.0', process.version, NODE_ENV).set(1);
+appInfo.labels(VERSION, process.version, NODE_ENV).set(1);
 
 // ── Metrics Middleware ───────────────────────────────────────────────────────
 app.use(express.json({ limit: '10kb' }));
@@ -123,20 +138,22 @@ app.use(rateLimit);
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
-app.get('/', (req, res) => {
-  res.json({ status: 'ok', message: 'hello Sir', version: '1.1.0', environment: NODE_ENV });
+app.get('/', (_req, res) => {
+  res.json({ status: 'ok', message: 'hello Sir', version: VERSION, environment: NODE_ENV });
 });
 
-// Health check — always returns 200 so Render doesn't mark the service as unhealthy
 app.get('/health', (_req, res) => {
+  const mem = process.memoryUsage();
   res.json({
     status: 'healthy',
+    version: VERSION,
     uptime: process.uptime(),
     timestamp: new Date().toISOString(),
     memory: {
-      rss: process.memoryUsage().rss,
-      heapUsed: process.memoryUsage().heapUsed,
-      heapTotal: process.memoryUsage().heapTotal,
+      rss: mem.rss,
+      heapUsed: mem.heapUsed,
+      heapTotal: mem.heapTotal,
+      external: mem.external,
     },
   });
 });
@@ -157,7 +174,7 @@ app.get('/metrics', async (_req, res) => {
 app.get('/info', (_req, res) => {
   res.json({
     name: 'CI/CD Pipeline Automation',
-    version: '1.1.0',
+    version: VERSION,
     nodeVersion: process.version,
     environment: NODE_ENV,
     uptime: process.uptime(),
@@ -169,20 +186,46 @@ app.get('/info', (_req, res) => {
 app.use((_req, res) => {
   res.status(404).json({
     error: 'Not Found',
+    requestId: _req.id,
     availableEndpoints: ['GET /', 'GET /health', 'GET /ready', 'GET /metrics', 'GET /info'],
   });
 });
 
 // ── Error Handler ────────────────────────────────────────────────────────────
+// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
-  console.error(`[ERROR] ${new Date().toISOString()} ${req.method} ${req.path}:`, err.message);
-  res.status(500).json({ error: 'Internal Server Error' });
+  console.error(`[ERROR] ${new Date().toISOString()} [${req.id}] ${req.method} ${req.path}:`, err.message);
+  res.status(500).json({ error: 'Internal Server Error', requestId: req.id });
 });
+
+// ── Graceful Shutdown ────────────────────────────────────────────────────────
+let server;
+
+function shutdown(signal) {
+  console.log(`\n[${signal}] Shutting down gracefully...`);
+  clearInterval(cleanupInterval);
+  if (server) {
+    server.close(() => {
+      console.log('Server closed.');
+      process.exit(0);
+    });
+    // Force close after 10s
+    setTimeout(() => {
+      console.error('Forced shutdown after timeout.');
+      process.exit(1);
+    }, 10000).unref();
+  } else {
+    process.exit(0);
+  }
+}
+
+process.on('SIGTERM', () => shutdown('SIGTERM'));
+process.on('SIGINT', () => shutdown('SIGINT'));
 
 // ── Start ────────────────────────────────────────────────────────────────────
 if (require.main === module) {
-  app.listen(PORT, () => {
-    console.log(`[${NODE_ENV}] Server running on port ${PORT}`);
+  server = app.listen(PORT, () => {
+    console.log(`[${NODE_ENV}] Server v${VERSION} running on port ${PORT}`);
   });
 }
 

@@ -1,10 +1,7 @@
-FROM alpine:latest
+FROM alpine:3.20
 
-# Minimal image — just curl to ping all services
 RUN apk add --no-cache curl
 
-# This runs on cron schedule via Render
-# Pings all three services to prevent free-tier sleep
 CMD ["sh", "-c", \
   "echo '--- Keep-Alive Ping ---' && \
    curl -sf --max-time 30 https://ci-cd-pipeline-automation-app.onrender.com/health && echo '✓ App OK' || echo '✗ App unreachable' && \

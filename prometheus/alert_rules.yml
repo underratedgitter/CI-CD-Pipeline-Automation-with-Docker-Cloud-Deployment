@@ -25,6 +25,19 @@ groups:
           summary: "High HTTP 5xx error rate"
           description: "More than 5% of requests are returning 5xx errors."
 
+      # ── Client error rate ──────────────────────────────────────────────────────
+      - alert: HighClientErrorRate
+        expr: |
+          rate(http_requests_total{status_code=~"4.."}[5m])
+          /
+          rate(http_requests_total[5m]) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "High HTTP 4xx error rate"
+          description: "More than 10% of requests are returning 4xx errors — may indicate bad requests or probing."
+
       # ── Latency ────────────────────────────────────────────────────────────────
       - alert: HighLatencyP99
         expr: |
@@ -51,6 +64,16 @@ groups:
           summary: "Node.js heap usage above 85%"
           description: "V8 heap is nearly full — risk of out-of-memory crash."
 
+      # ── RSS Memory ─────────────────────────────────────────────────────────────
+      - alert: HighMemoryRSS
+        expr: process_resident_memory_bytes > 200 * 1024 * 1024
+        for: 5m
+        labels:
+          severity: warning
+        annotations:
+          summary: "RSS memory above 200MB"
+          description: "Resident memory is unusually high — possible memory leak."
+
       # ── Event loop ─────────────────────────────────────────────────────────────
       - alert: HighEventLoopLag
         expr: nodejs_eventloop_lag_seconds > 0.1
@@ -60,3 +83,13 @@ groups:
         annotations:
           summary: "Event loop lag above 100ms"
           description: "The Node.js event loop is blocked — app may be unresponsive."
+
+      # ── Low request rate ───────────────────────────────────────────────────────
+      - alert: LowRequestRate
+        expr: rate(http_requests_total[5m]) < 0.01
+        for: 10m
+        labels:
+          severity: info
+        annotations:
+          summary: "Low request rate detected"
+          description: "Request rate is near zero — app may not be receiving traffic."
