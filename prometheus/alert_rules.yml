@@ -3,14 +3,22 @@ groups:
     rules:
 
       # ── App availability ───────────────────────────────────────────────────────
+      # Matches both scrape jobs: 'render-app' (the deployed target) and
+      # 'node-app' (only present when running locally via docker-compose).
+      #
+      # This previously read job="node-app", which is commented out in
+      # prometheus.yml because 'my-app' is a Compose-only hostname. The
+      # selector matched nothing, so the alert could never fire and Prometheus
+      # reported no error — check `up` in the expression browser after renaming
+      # any job, since a dead selector is silent.
       - alert: AppDown
-        expr: up{job="node-app"} == 0
+        expr: up{job=~"node-app|render-app"} == 0
         for: 1m
         labels:
           severity: critical
         annotations:
-          summary: "Node.js app is down"
-          description: "Prometheus cannot reach the /metrics endpoint — app may have crashed."
+          summary: "Node.js app is down ({{ $labels.instance }})"
+          description: "Prometheus cannot scrape {{ $labels.instance }} — the app may have crashed or the deployment is unreachable."
 
       # ── Error rate ─────────────────────────────────────────────────────────────
       - alert: HighErrorRate

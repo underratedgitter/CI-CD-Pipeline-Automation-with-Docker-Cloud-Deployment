@@ -63,7 +63,7 @@ Node's default process metrics — heap, RSS, event-loop lag, GC — come along 
 | `HighHeapUsage` | warning |
 | `HighMemoryRSS` | warning |
 | `HighEventLoopLag` | warning |
-| `LowRequestRate` | warning |
+| `LowRequestRate` | info |
 
 Each carries a `for:` duration, so a single scrape blip doesn't page anyone. `LowRequestRate` is the one people forget: traffic falling off a cliff usually means something upstream broke, and no error-rate alert will catch it.
 
