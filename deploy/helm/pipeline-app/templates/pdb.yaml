@@ -1,0 +1,15 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "pipeline-app.fullname" . }}
+  labels:
+    {{- include "pipeline-app.labels" . | nindent 4 }}
+spec:
+  # Applies to voluntary disruption only — a node drain during an upgrade, not a
+  # node catching fire. That is what topology spread is for.
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "pipeline-app.selectorLabels" . | nindent 6 }}
+{{- end }}

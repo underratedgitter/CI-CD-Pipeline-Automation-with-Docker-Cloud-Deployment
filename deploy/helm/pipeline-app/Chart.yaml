@@ -1,0 +1,23 @@
+apiVersion: v2
+name: pipeline-app
+description: The Node/Express service from this repository, running on Kubernetes
+type: application
+
+# Chart version moves when the chart changes; appVersion tracks package.json.
+version: 0.1.0
+appVersion: "1.1.0"
+
+home: https://github.com/underratedgitter/CI-CD-Pipeline-Automation-with-Docker-Cloud-Deployment
+sources:
+  - https://github.com/underratedgitter/CI-CD-Pipeline-Automation-with-Docker-Cloud-Deployment
+
+maintainers:
+  - name: Suraj Patel
+    url: https://github.com/underratedgitter
+
+keywords:
+  - nodejs
+  - prometheus
+  - observability
+
+kubeVersion: ">=1.25.0-0"

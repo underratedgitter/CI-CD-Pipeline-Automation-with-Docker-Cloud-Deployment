@@ -1,0 +1,29 @@
+{{ .Chart.Name }} {{ .Chart.AppVersion }} is installed as {{ .Release.Name }} in {{ .Release.Namespace }}.
+
+Watch it come up:
+
+  kubectl -n {{ .Release.Namespace }} rollout status deploy/{{ include "pipeline-app.fullname" . }}
+
+{{- if .Values.ingress.enabled }}
+
+Reach it through the ingress:
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+{{- else }}
+
+No ingress. Port-forward instead:
+
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "pipeline-app.fullname" . }} 8080:{{ .Values.service.port }}
+  curl localhost:8080/health
+{{- end }}
+
+Verify the deployment actually works, rather than assuming it did:
+
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+{{- if not .Values.monitoring.serviceMonitor.enabled }}
+
+Metrics are exposed on /metrics but nothing is scraping them: monitoring.serviceMonitor.enabled
+is false. Turn it on where the Prometheus Operator CRDs are installed.
+{{- end }}

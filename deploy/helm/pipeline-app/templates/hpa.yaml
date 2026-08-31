@@ -1,0 +1,29 @@
+{{- if .Values.autoscaling.enabled }}
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: {{ include "pipeline-app.fullname" . }}
+  labels:
+    {{- include "pipeline-app.labels" . | nindent 4 }}
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: {{ include "pipeline-app.fullname" . }}
+  minReplicas: {{ .Values.autoscaling.minReplicas }}
+  maxReplicas: {{ .Values.autoscaling.maxReplicas }}
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Utilization is a percentage of the *request*, not the limit. With a
+          # 50m request, 70% means the pod is using 35m — which is why the
+          # request has to be a realistic number and not an aspiration.
+          averageUtilization: {{ .Values.autoscaling.targetCPUUtilizationPercentage }}
+  {{- with .Values.autoscaling.behavior }}
+  behavior:
+    {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

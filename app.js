@@ -10,6 +10,10 @@ const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const VERSION = pkg.version;
 
+// Flipped by the shutdown handler. Kubernetes reads it through /ready, which is
+// how the pod leaves the Service's endpoint list before it stops accepting work.
+let shuttingDown = false;
+
 // ── Request ID ───────────────────────────────────────────────────────────────
 app.use((req, res, next) => {
   req.id = req.headers['x-request-id'] || crypto.randomUUID();
@@ -159,6 +163,14 @@ app.get('/health', (_req, res) => {
 });
 
 app.get('/ready', (_req, res) => {
+  // Distinct from /health on purpose. Liveness asks "is this process broken,
+  // restart it"; readiness asks "should traffic come here". During a drain the
+  // answer is no while the process is still perfectly healthy — returning 200
+  // here makes the whole graceful shutdown path decorative, because the load
+  // balancer keeps sending requests to a server that is closing its sockets.
+  if (shuttingDown) {
+    return res.status(503).json({ status: 'shutting_down', timestamp: new Date().toISOString() });
+  }
   res.json({ status: 'ready', timestamp: new Date().toISOString() });
 });
 
@@ -202,6 +214,9 @@ app.use((err, req, res, _next) => {
 let server;
 
 function shutdown(signal) {
+  // First, before anything is closed: stop passing readiness so the endpoint is
+  // withdrawn while this process can still serve the requests already in flight.
+  shuttingDown = true;
   console.log(`\n[${signal}] Shutting down gracefully...`);
   clearInterval(cleanupInterval);
   if (server) {
@@ -230,3 +245,9 @@ if (require.main === module) {
 }
 
 module.exports = app;
+
+// For tests. Nothing in the running application should call this — the signal
+// handler owns the flag.
+module.exports.setShuttingDown = (value) => {
+  shuttingDown = value;
+};

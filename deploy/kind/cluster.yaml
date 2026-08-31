@@ -1,0 +1,26 @@
+# kind create cluster --config deploy/kind/cluster.yaml
+#
+# Three nodes rather than one, so the topology spread constraint and the pod
+# disruption budget are actually exercised. On a single-node cluster both are
+# satisfied trivially and prove nothing.
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: pipeline
+
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      - |
+        kind: InitConfiguration
+        nodeRegistration:
+          kubeletExtraArgs:
+            node-labels: "ingress-ready=true"
+    extraPortMappings:
+      - containerPort: 80
+        hostPort: 8080
+        protocol: TCP
+      - containerPort: 443
+        hostPort: 8443
+        protocol: TCP
+  - role: worker
+  - role: worker

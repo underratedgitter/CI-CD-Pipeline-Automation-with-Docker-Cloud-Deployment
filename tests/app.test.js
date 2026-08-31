@@ -150,3 +150,31 @@ describe('Metrics Tracking', () => {
     expect(res.text).toContain('http_request_duration_seconds');
   });
 });
+
+// ── Readiness during shutdown ────────────────────────────────────────────────
+describe('GET /ready while draining', () => {
+  afterEach(() => {
+    app.setShuttingDown(false);
+  });
+
+  it('returns 503 once shutdown has started', async () => {
+    app.setShuttingDown(true);
+    const res = await request(app).get('/ready');
+    expect(res.statusCode).toBe(503);
+    expect(res.body).toHaveProperty('status', 'shutting_down');
+  });
+
+  // Liveness must keep passing during a drain. A 503 here would have the kubelet
+  // SIGKILL the pod part-way through, which is the opposite of a graceful stop.
+  it('keeps /health passing so the pod is not killed mid-drain', async () => {
+    app.setShuttingDown(true);
+    const res = await request(app).get('/health');
+    expect(res.statusCode).toBe(200);
+  });
+
+  it('returns 200 again when not shutting down', async () => {
+    const res = await request(app).get('/ready');
+    expect(res.statusCode).toBe(200);
+    expect(res.body).toHaveProperty('status', 'ready');
+  });
+});

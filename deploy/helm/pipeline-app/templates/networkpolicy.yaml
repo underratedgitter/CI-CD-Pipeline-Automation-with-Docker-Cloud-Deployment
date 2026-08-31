@@ -1,0 +1,38 @@
+{{- if .Values.networkPolicy.enabled }}
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "pipeline-app.fullname" . }}
+  labels:
+    {{- include "pipeline-app.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "pipeline-app.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # Naming who may connect turns the flat default — every pod in the cluster
+    # can reach every other pod — into an explicit list.
+    - from:
+        {{- range .Values.networkPolicy.ingressNamespaceSelectors }}
+        - namespaceSelector:
+            {{- toYaml . | nindent 12 }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.containerPort }}
+  egress:
+    # DNS, and nothing else. The app makes no outbound calls; if that changes,
+    # the rule has to change with it, which is the point.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+{{- end }}

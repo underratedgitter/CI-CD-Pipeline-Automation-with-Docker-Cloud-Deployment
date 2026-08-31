@@ -1,0 +1,155 @@
+{{- if .Values.monitoring.prometheusRule.enabled }}
+{{- $job := include "pipeline-app.fullname" . -}}
+{{- $ns := .Release.Namespace -}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "pipeline-app.fullname" . }}
+  labels:
+    {{- include "pipeline-app.labels" . | nindent 4 }}
+    {{- with .Values.monitoring.prometheusRule.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+    - name: pipeline-app.availability
+      rules:
+        # absent(), not up == 0. When the last pod goes away the series stops
+        # existing rather than reporting zero, so up == 0 never fires on a total
+        # outage — the case the alert is actually for.
+        - alert: PipelineAppAbsent
+          expr: absent(up{job="{{ $job }}", namespace="{{ $ns }}"} == 1)
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "No healthy {{ $job }} pod is being scraped"
+            description: "Prometheus has no target reporting up=1 in {{ $ns }}. Every replica is down or the ServiceMonitor selector no longer matches."
+
+        # One pod out of several. Below paging severity because the service is
+        # still serving; it wants looking at, not waking someone.
+        - alert: PipelineAppInstanceDown
+          expr: up{job="{{ $job }}", namespace="{{ $ns }}"} == 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Pod {{`{{ $labels.pod }}`}} is not being scraped"
+            description: "The pod has been unscrapeable for five minutes while others are healthy."
+
+        - alert: PipelineAppCrashLooping
+          expr: |
+            increase(kube_pod_container_status_restarts_total{namespace="{{ $ns }}", container="pipeline-app"}[15m]) > 3
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: "{{`{{ $labels.pod }}`}} has restarted more than three times in fifteen minutes"
+            description: "Check `kubectl logs --previous`. A failing liveness probe and a crashing process look the same from here."
+
+    - name: pipeline-app.traffic
+      rules:
+        # A ratio, not a count. Twenty 5xx a minute is a catastrophe at 100 rps
+        # and background noise at 10,000.
+        - alert: PipelineAppHighErrorRate
+          expr: |
+            sum(rate(http_requests_total{job="{{ $job }}", namespace="{{ $ns }}", status_code=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="{{ $job }}", namespace="{{ $ns }}"}[5m])) > 0.05
+          for: 2m
+          labels:
+            severity: critical
+          annotations:
+            summary: "More than 5% of requests are returning 5xx"
+            description: "Sustained for two minutes across all replicas."
+
+        - alert: PipelineAppHighClientErrorRate
+          expr: |
+            sum(rate(http_requests_total{job="{{ $job }}", namespace="{{ $ns }}", status_code=~"4.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="{{ $job }}", namespace="{{ $ns }}"}[5m])) > 0.1
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "More than 10% of requests are returning 4xx"
+            description: "Usually a client deploying against a changed contract, or someone probing for paths."
+
+        # Quantile computed from the summed buckets, not averaged across pods.
+        # Averaging quantiles gives a number that is not a quantile of anything.
+        - alert: PipelineAppHighLatencyP99
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le) (rate(http_request_duration_seconds_bucket{job="{{ $job }}", namespace="{{ $ns }}"}[5m]))
+            ) > 1
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "P99 latency above one second"
+            description: "The slowest 1% of requests are taking over a second."
+
+        - alert: PipelineAppNoTraffic
+          expr: |
+            sum(rate(http_requests_total{job="{{ $job }}", namespace="{{ $ns }}"}[5m])) < 0.01
+          for: 15m
+          labels:
+            severity: info
+          annotations:
+            summary: "Request rate is effectively zero"
+            description: "Nothing is reaching the service. Either the ingress is broken or nobody is using it — both worth knowing, neither worth paging for."
+
+    - name: pipeline-app.saturation
+      rules:
+        - alert: PipelineAppHighHeapUsage
+          expr: |
+            nodejs_heap_size_used_bytes{job="{{ $job }}", namespace="{{ $ns }}"}
+            /
+            nodejs_heap_size_total_bytes{job="{{ $job }}", namespace="{{ $ns }}"} > 0.85
+          for: 3m
+          labels:
+            severity: warning
+          annotations:
+            summary: "V8 heap on {{`{{ $labels.pod }}`}} is above 85% full"
+            description: "Approaching an out-of-memory crash, which arrives as a restart rather than an error."
+
+        # The fixed 200 MiB threshold from the Compose setup does not survive a
+        # move to Kubernetes: what matters is proximity to the container's limit,
+        # because that is the number the OOM killer uses.
+        - alert: PipelineAppNearMemoryLimit
+          expr: |
+            container_memory_working_set_bytes{namespace="{{ $ns }}", container="pipeline-app"}
+            /
+            kube_pod_container_resource_limits{namespace="{{ $ns }}", container="pipeline-app", resource="memory"} > 0.9
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: "{{`{{ $labels.pod }}`}} is within 10% of its memory limit"
+            description: "The kubelet will OOM-kill the container at the limit. Raise the limit or find the leak."
+
+        - alert: PipelineAppEventLoopBlocked
+          expr: nodejs_eventloop_lag_seconds{job="{{ $job }}", namespace="{{ $ns }}"} > 0.1
+          for: 2m
+          labels:
+            severity: warning
+          annotations:
+            summary: "Event loop lag on {{`{{ $labels.pod }}`}} is above 100ms"
+            description: "Synchronous work is blocking the loop. Every request behind it is queued, so this shows up as latency long before it shows up as errors."
+
+    - name: pipeline-app.capacity
+      rules:
+        # The autoscaler at its ceiling is not itself an incident, but it is the
+        # last quiet moment before one.
+        - alert: PipelineAppAutoscalerAtMax
+          expr: |
+            kube_horizontalpodautoscaler_status_current_replicas{namespace="{{ $ns }}", horizontalpodautoscaler="{{ $job }}"}
+            >=
+            kube_horizontalpodautoscaler_spec_max_replicas{namespace="{{ $ns }}", horizontalpodautoscaler="{{ $job }}"}
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: "HPA has been pinned at max replicas for fifteen minutes"
+            description: "There is no headroom left. Raise maxReplicas or work out why each pod needs so much CPU."
+{{- end }}

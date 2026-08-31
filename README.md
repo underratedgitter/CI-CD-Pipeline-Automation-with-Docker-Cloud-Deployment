@@ -1,6 +1,6 @@
 # CI/CD Pipeline Automation
 
-A small Node service used as a vehicle for the parts around it: a four-stage GitHub Actions pipeline, a hardened multi-stage Docker image, Prometheus instrumentation and Grafana dashboards, and eight alert rules that fire on the things that actually page someone.
+A small Node service used as a vehicle for the parts around it: a GitHub Actions pipeline that gates, builds, scans and deploys; a hardened multi-stage Docker image; Prometheus instrumentation and Grafana dashboards; a Helm chart that runs the whole thing on Kubernetes; and alert rules that fire on the things that actually page someone.
 
 Code push to a running cloud deployment in under five minutes.
 
@@ -8,18 +8,43 @@ Code push to a running cloud deployment in under five minutes.
 
 ## The pipeline
 
-`.github/workflows/pipeline.yml` runs four jobs. The first two gate the rest.
+`.github/workflows/pipeline.yml`. The first three jobs gate the rest.
 
 | Job | Does | Blocks on failure |
 |---|---|---|
-| **Lint & Test** | ESLint, then Jest with coverage | yes |
+| **Lint & Test** | ESLint, then Jest with coverage thresholds | yes |
 | **Security Audit** | `npm audit` against the dependency tree | yes |
-| **Build & Push** | Buildx build, push to Docker Hub, then **Trivy** scans the built image for vulnerabilities | push events only |
-| **Deploy** | Ships to Render | push events only |
+| **Lint & Validate Chart** | `helm lint` on both value sets, then renders the chart and checks it against the real Kubernetes API schemas with `kubeconform`, then a Trivy config scan | yes |
+| **Build & Push** | Buildx build, push to GHCR, **Trivy** scans the pushed image *by digest* | push events only |
+| **Deploy to Kubernetes** | `helm upgrade --install --atomic` at the built digest, then `helm test` | push events, if a cluster is configured |
+| **Deploy to Render** | Deploy hook, then polls `/health` until it answers | push events, if the hook is configured |
 
-Pull requests run the first two jobs and stop there — nothing unreviewed reaches a registry or a deployment.
+Pull requests run the gates and stop — nothing unreviewed reaches a registry or a
+deployment.
 
-Two secrets are needed: `DOCKER_USERNAME` and `DOCKER_PASSWORD`, plus whatever Render needs for the deploy hook.
+Nothing has to be configured for the pipeline to pass. GHCR authenticates with
+the token the workflow already holds, so there is no registry secret at all; the
+two deploy jobs check for their credentials in a `guard` job and skip themselves
+when a fork or a fresh clone does not have them.
+
+| Configured with | Enables |
+|---|---|
+| *(nothing)* | gates, build, push to GHCR, image scan |
+| `KUBE_CONFIG` (base64 kubeconfig) | the Kubernetes deploy |
+| `RENDER_DEPLOY_HOOK_URL` | the Render deploy |
+| `DOCKER_USERNAME` / `DOCKER_PASSWORD` | an additional Docker Hub push |
+
+A few details that are deliberate rather than incidental:
+
+- **The image is scanned and deployed by digest, not by tag.** A tag is a pointer
+  that can move between the scan and the deploy. The digest is the artefact that
+  was actually tested.
+- **`--atomic` on the upgrade.** If the new pods never pass readiness, Helm rolls
+  back and the previous version keeps serving, rather than leaving the release
+  half-applied.
+- **Actions are pinned to releases.** `aquasecurity/trivy-action@0.28.0`, not
+  `@master` — a floating reference runs whatever is upstream at the moment the
+  job starts, which is somebody else's `main` branch with write access to the run.
 
 ---
 
@@ -121,6 +146,73 @@ Drives requests at the service so the histograms fill, the gauges move, and the 
 
 ---
 
+## Kubernetes
+
+`deploy/helm/pipeline-app` is the chart. It renders twelve objects: Deployment,
+Service, Ingress, HPA, PodDisruptionBudget, ServiceAccount, ConfigMap, Secret,
+NetworkPolicy, ServiceMonitor, PrometheusRule, and a `helm test` pod that curls
+`/health`, `/ready` and `/metrics` and fails the release if any of them is wrong.
+
+```bash
+make -C deploy up      # kind cluster, ingress, build, load, install, test
+make -C deploy status
+make -C deploy down
+```
+
+The kind cluster is three nodes rather than one, so the topology spread
+constraint and the disruption budget are actually exercised. On a single node
+both are satisfied trivially and prove nothing.
+
+### The parts worth explaining
+
+**`/ready` returns 503 while draining.** It used to return 200 unconditionally,
+which made the graceful shutdown decorative — the process closed its listener
+politely while the Service kept routing new requests to it. The SIGTERM handler
+now flips a flag that readiness reads, so the endpoint is withdrawn first.
+`/health` deliberately keeps returning 200 during the drain: a liveness failure
+would have the kubelet SIGKILL the pod part-way through, which is the opposite of
+what a graceful shutdown is for.
+
+**A `preStop` sleep of five seconds.** The kubelet sends SIGTERM without waiting
+for kube-proxy to finish removing the endpoint on every node. Those two race, and
+without the pause a slice of requests is routed to a pod that has already started
+shutting down.
+
+**A startup probe, so the liveness probe can be strict.** Node with a cold module
+cache takes a few seconds. Without a startup probe, the liveness probe has to be
+slack enough to tolerate that on every check for the life of the pod — which is
+how liveness probes end up never detecting anything.
+
+**Hard memory limit, no CPU limit.** Memory is not compressible; over the limit
+something gets killed, so the limit is the safety net. CPU is compressible, and a
+limit throttles the container at its quota even when the node is idle — latency
+the dashboards cannot explain.
+
+**Read-only root filesystem**, `runAsNonRoot`, all capabilities dropped,
+`RuntimeDefault` seccomp, and the service account token not mounted, because the
+app never calls the Kubernetes API. The Dockerfile already runs as a non-root
+user; this enforces it at admission rather than trusting the image.
+
+**The alert rules move too, and change.** `deploy/helm/pipeline-app/templates/prometheusrule.yaml`
+carries the Compose-era rules plus what Kubernetes adds — crash-looping, HPA
+pinned at max replicas — and two of them are rewritten for the new environment:
+
+- `AppDown` became `absent(up{...} == 1)`. `up == 0` cannot fire on a total
+  outage, because when the last pod goes away the series stops existing rather
+  than reporting zero. That is exactly the case the alert is for.
+- `HighMemoryRSS > 200MB` became working set over the container's memory *limit*.
+  A fixed byte threshold means nothing once the scheduler owns the limit; what
+  matters is proximity to the number the OOM killer uses.
+
+### Deploying to a real cluster
+
+Base64 a kubeconfig into `KUBE_CONFIG`, set `K8S_NAMESPACE` and `APP_URL` as
+repository variables, and the pipeline takes it from there. Infrastructure to run
+it on — VPC, cluster, load balancer, registry, IAM — is Terraform in
+[terraform-aws-ecs-platform](https://github.com/underratedgitter/terraform-aws-ecs-platform).
+
+---
+
 ## Layout
 
 ```
@@ -134,7 +226,11 @@ prometheus/
 grafana/
   provisioning/               datasource + dashboard auto-config
   dashboards/                 nodejs-overview
+deploy/
+  helm/pipeline-app/          the chart: 12 objects, two value sets
+  kind/cluster.yaml           3-node local cluster
+  Makefile                    up / test / lint / template / down
 .github/workflows/pipeline.yml
 render.yaml                   deploy target
-tests/app.test.js             20 tests
+tests/app.test.js             23 tests
 ```

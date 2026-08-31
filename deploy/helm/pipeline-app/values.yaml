@@ -1,0 +1,159 @@
+# Defaults target a local kind cluster. See values-prod.yaml for what changes
+# when this runs somewhere that matters.
+
+replicaCount: 2
+
+image:
+  repository: ghcr.io/underratedgitter/ci-cd-pipeline-app
+  # Empty means "use appVersion from Chart.yaml". CI overrides it with the image
+  # digest of the build it just pushed.
+  tag: ""
+  # Set by CI to the digest of the image it just built and scanned. Takes
+  # precedence over tag when non-empty.
+  digest: ""
+  pullPolicy: IfNotPresent
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+  # The app calls no Kubernetes API. Mounting a token it never uses just leaves
+  # a credential lying around inside the container.
+  automountServiceAccountToken: false
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 3000
+  # Named so the ServiceMonitor and NetworkPolicy can refer to the port by name
+  # and keep working if the number changes.
+  portName: http
+
+containerPort: 3000
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations: {}
+  hosts:
+    - host: pipeline-app.localtest.me
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 128Mi
+  limits:
+    # No CPU limit on purpose. A limit throttles the container at the quota even
+    # when the node is idle, which shows up as latency the dashboards cannot
+    # explain. The request is what the scheduler uses; that is the part that
+    # matters. Memory does get a hard limit — memory is not compressible.
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  behavior:
+    scaleDown:
+      # Five minutes of headroom before scaling in, so a brief dip in traffic
+      # does not remove capacity that is needed again a minute later.
+      stabilizationWindowSeconds: 300
+    scaleUp:
+      stabilizationWindowSeconds: 30
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# The container already runs as a non-root user from the Dockerfile; this
+# enforces it at admission time rather than trusting the image.
+podSecurityContext:
+  runAsNonRoot: true
+  fsGroup: 1000
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+probes:
+  startup:
+    # Node with a cold module cache can take a few seconds. The startup probe
+    # covers that window so the liveness probe does not have to be made slack
+    # enough to tolerate it, which is what makes liveness probes useless.
+    path: /health
+    periodSeconds: 3
+    failureThreshold: 20
+  liveness:
+    path: /health
+    periodSeconds: 15
+    timeoutSeconds: 3
+    failureThreshold: 3
+  readiness:
+    # /ready flips to 503 the moment SIGTERM lands, so the endpoint is pulled
+    # out of rotation before the process starts closing connections.
+    path: /ready
+    periodSeconds: 5
+    timeoutSeconds: 2
+    failureThreshold: 2
+
+# Endpoint removal and SIGTERM race each other; kubelet does not wait for
+# kube-proxy. The preStop sleep gives the endpoint change time to propagate
+# before the process begins draining.
+terminationGracePeriodSeconds: 30
+preStopSleepSeconds: 5
+
+env:
+  NODE_ENV: production
+  LOG_LEVEL: info
+
+# Values here become a Secret. In a real cluster these come from External
+# Secrets or Secrets Store CSI instead — a chart value ends up in the release
+# in plain text, which is why nothing sensitive is listed by default.
+secretEnv: {}
+
+# Two replicas on one node is one node failure away from an outage.
+topologySpreadConstraints:
+  enabled: true
+  maxSkew: 1
+  topologyKey: kubernetes.io/hostname
+  whenUnsatisfiable: ScheduleAnyway
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+monitoring:
+  # Both need the Prometheus Operator CRDs. Off by default so a plain cluster
+  # can install this chart without failing on a missing CRD.
+  serviceMonitor:
+    enabled: false
+    interval: 15s
+    scrapeTimeout: 10s
+    path: /metrics
+    labels: {}
+  prometheusRule:
+    enabled: false
+    labels: {}
+
+networkPolicy:
+  enabled: false
+  # Namespaces allowed to reach the pods. Everything else is denied.
+  ingressNamespaceSelectors:
+    - matchLabels:
+        kubernetes.io/metadata.name: ingress-nginx
+    - matchLabels:
+        kubernetes.io/metadata.name: monitoring

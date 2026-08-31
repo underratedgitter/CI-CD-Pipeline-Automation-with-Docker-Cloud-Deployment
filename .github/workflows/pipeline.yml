@@ -7,26 +7,55 @@ on:
     branches: [main]
 
 env:
-  IMAGE_NAME: ${{ secrets.DOCKER_USERNAME }}/my-app
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository_owner }}/ci-cd-pipeline-app
+
+# One deploy at a time. Two overlapping helm upgrades on the same release leave
+# it stuck in pending-upgrade and need a manual rollback to clear.
+concurrency:
+  group: pipeline-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
 
 jobs:
-  # ── 1. Lint & Test ────────────────────────────────────────────────────────────
+  # ── 0. Which optional targets are configured ─────────────────────────────────
+  # The secrets context is not available in a job-level `if`, so the checks run
+  # here as steps and the results are passed down as outputs. Without this a fork
+  # or a fresh clone fails the pipeline on credentials it was never given.
+  guard:
+    name: Check configured targets
+    runs-on: ubuntu-latest
+
+    outputs:
+      dockerhub: ${{ steps.check.outputs.dockerhub }}
+      kubernetes: ${{ steps.check.outputs.kubernetes }}
+      render: ${{ steps.check.outputs.render }}
+
+    steps:
+      - id: check
+        run: |
+          {
+            echo "dockerhub=${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}"
+            echo "kubernetes=${{ secrets.KUBE_CONFIG != '' }}"
+            echo "render=${{ secrets.RENDER_DEPLOY_HOOK_URL != '' }}"
+          } >> "$GITHUB_OUTPUT"
+
+  # ── 1. Lint & Test ───────────────────────────────────────────────────────────
   test:
     name: Lint & Test
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
 
       - name: Run linter
         run: npm run lint --if-present
@@ -34,89 +63,232 @@ jobs:
       - name: Run tests
         run: npm test
 
-  # ── 2. Security Audit ────────────────────────────────────────────────────────
+  # ── 2. Security audit ────────────────────────────────────────────────────────
   security:
     name: Security Audit
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Node.js
-        uses: actions/setup-node@v4
+      - uses: actions/setup-node@v4
         with:
           node-version: '20'
           cache: 'npm'
 
-      - name: Install dependencies
-        run: npm ci
+      - run: npm ci
 
       - name: Run npm audit
         run: npm audit --audit-level=high
         continue-on-error: true
 
-  # ── 3. Build & Push Docker image ─────────────────────────────────────────────
-  build-and-push:
-    name: Build & Push Docker Image
+  # ── 3. Chart ─────────────────────────────────────────────────────────────────
+  # Renders the chart and checks the result against the real Kubernetes API
+  # schemas. A chart that only gets validated at `helm upgrade` time is validated
+  # against production.
+  chart:
+    name: Lint & Validate Chart
     runs-on: ubuntu-latest
-    needs: [test, security]
-    if: github.event_name == 'push'
 
     steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Lint both value sets
+        run: |
+          helm lint deploy/helm/pipeline-app --strict
+          helm lint deploy/helm/pipeline-app --strict \
+            --values deploy/helm/pipeline-app/values-prod.yaml
+
+      - name: Install kubeconform
+        run: |
+          curl -fsSL -o kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar xzf kubeconform.tar.gz kubeconform
+          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
+
+      - name: Render and validate against the Kubernetes schemas
+        run: |
+          set -euo pipefail
+          # Everything optional switched on, so the CRD-gated templates are
+          # rendered too instead of being skipped by the defaults.
+          helm template pipeline-app deploy/helm/pipeline-app \
+            --namespace pipeline \
+            --set monitoring.serviceMonitor.enabled=true \
+            --set monitoring.prometheusRule.enabled=true \
+            --set networkPolicy.enabled=true \
+            > rendered.yaml
+          # ServiceMonitor and PrometheusRule are CRDs and have no schema in the
+          # upstream catalogue; -ignore-missing-schemas skips those two rather
+          # than failing on them. Every core object is checked strictly.
+          kubeconform -strict -summary -ignore-missing-schemas \
+            -kubernetes-version 1.29.0 rendered.yaml
+
+      - name: Scan the rendered manifests for misconfiguration
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          scan-type: config
+          scan-ref: rendered.yaml
+          format: table
+          exit-code: '0'
+          severity: HIGH,CRITICAL
+
+  # ── 4. Build, scan and push ──────────────────────────────────────────────────
+  build-and-push:
+    name: Build & Push Image
+    runs-on: ubuntu-latest
+    needs: [guard, test, security, chart]
+    if: github.event_name == 'push'
+
+    permissions:
+      contents: read
+      packages: write
+
+    outputs:
+      digest: ${{ steps.build.outputs.digest }}
+      tag: ${{ steps.meta.outputs.version }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      # GHCR authenticates with the token the workflow already has, so pushing
+      # needs no stored registry password at all.
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Log in to Docker Hub
+        if: needs.guard.outputs.dockerhub == 'true'
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
+      - name: Derive tags
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,format=long
+            type=raw,value=latest,enable={{is_default_branch}}
 
-      - name: Build and push image
+      - name: Build and push
+        id: build
         uses: docker/build-push-action@v5
         with:
           context: .
           push: true
-          tags: |
-            ${{ env.IMAGE_NAME }}:latest
-            ${{ env.IMAGE_NAME }}:${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
 
-      - name: Scan Docker image
-        uses: aquasecurity/trivy-action@master
+      # By digest, not by tag. `latest` can move between the push and the scan;
+      # the digest is the thing that will actually be deployed.
+      - name: Scan the image
+        uses: aquasecurity/trivy-action@0.28.0
         with:
-          image-ref: ${{ env.IMAGE_NAME }}:latest
-          format: 'table'
+          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
+          format: table
           exit-code: '0'
-          severity: 'CRITICAL,HIGH'
-        continue-on-error: true
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
 
-  # ── 4. Deploy to Render ────────────────────────────────────────────────────────
-  deploy:
+  # ── 5. Deploy to Kubernetes ──────────────────────────────────────────────────
+  deploy-k8s:
+    name: Deploy to Kubernetes
+    runs-on: ubuntu-latest
+    needs: [guard, build-and-push]
+    if: github.event_name == 'push' && needs.guard.outputs.kubernetes == 'true'
+
+    environment:
+      name: production
+      url: ${{ vars.APP_URL }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+
+      - name: Configure cluster access
+        run: |
+          mkdir -p "$HOME/.kube"
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
+          chmod 600 "$HOME/.kube/config"
+
+      # Deployed by digest. A tag is a pointer someone can move; a digest is the
+      # image that was tested two jobs ago and nothing else.
+      - name: Deploy
+        run: |
+          set -euo pipefail
+          helm upgrade --install pipeline-app deploy/helm/pipeline-app \
+            --namespace "${{ vars.K8S_NAMESPACE || 'pipeline' }}" \
+            --create-namespace \
+            --values deploy/helm/pipeline-app/values-prod.yaml \
+            --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
+            --set image.digest=${{ needs.build-and-push.outputs.digest }} \
+            --atomic \
+            --timeout 5m
+        # --atomic rolls back to the previous release if the new pods never go
+        # ready, so a bad deploy leaves the last working version serving instead
+        # of a half-migrated one.
+
+      - name: Verify with the chart's own tests
+        run: |
+          helm test pipeline-app \
+            --namespace "${{ vars.K8S_NAMESPACE || 'pipeline' }}" \
+            --logs
+
+      - name: Report what is running
+        if: always()
+        run: |
+          kubectl -n "${{ vars.K8S_NAMESPACE || 'pipeline' }}" \
+            get deploy,pod,hpa -o wide || true
+
+  # ── 6. Deploy to Render ──────────────────────────────────────────────────────
+  # Kept because it is what the public demo runs on. The Kubernetes path above is
+  # the one that reflects how this would actually be operated.
+  deploy-render:
     name: Deploy to Render
     runs-on: ubuntu-latest
-    needs: build-and-push
-    if: github.event_name == 'push'
+    needs: [guard, build-and-push]
+    if: github.event_name == 'push' && needs.guard.outputs.render == 'true'
 
     steps:
       - name: Trigger Render deploy
         run: |
-          curl -s -o /dev/null -w "%{http_code}" "${{ secrets.RENDER_DEPLOY_HOOK_URL }}" | grep -q "200"
-          echo "✅ Render deploy triggered successfully"
+          set -euo pipefail
+          code=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
+          [ "$code" = "200" ] || { echo "Render hook returned $code"; exit 1; }
+          echo "Render deploy triggered"
 
-      - name: Verify deployment
+      - name: Wait for the new version to answer
         run: |
-          echo "⏳ Waiting 30s for Render to start deploying..."
-          sleep 30
-          STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://ci-cd-pipeline-automation-with-docker.onrender.com/health)
-          echo "Health check status: $STATUS"
-          if [ "$STATUS" = "200" ]; then
-            echo "✅ Deployment verified — app is live!"
-          else
-            echo "⚠️ App returned $STATUS — Render may still be deploying (free tier cold start)"
-          fi
+          set -euo pipefail
+          url="${{ vars.RENDER_URL || 'https://ci-cd-pipeline-automation-with-docker.onrender.com' }}/health"
+          # Poll rather than sleep for a fixed interval. A free-tier cold start is
+          # not a fixed length, so a single `sleep 30` either wastes time or
+          # reports a failure that has not happened.
+          for i in $(seq 1 20); do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$url" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "Healthy after $((i * 15))s"
+              exit 0
+            fi
+            echo "attempt $i: $code"
+            sleep 15
+          done
+          echo "Never returned 200 within five minutes"
+          exit 1

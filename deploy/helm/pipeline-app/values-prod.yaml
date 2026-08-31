@@ -1,0 +1,54 @@
+# helm upgrade --install pipeline-app ./deploy/helm/pipeline-app -f values-prod.yaml
+
+replicaCount: 3
+
+image:
+  pullPolicy: Always
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+  hosts:
+    - host: pipeline-app.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: pipeline-app-tls
+      hosts:
+        - pipeline-app.example.com
+
+resources:
+  requests:
+    cpu: 100m
+    memory: 192Mi
+  limits:
+    memory: 384Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 12
+  targetCPUUtilizationPercentage: 65
+
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+topologySpreadConstraints:
+  enabled: true
+  topologyKey: topology.kubernetes.io/zone
+  # Refuse to schedule rather than quietly pile every replica into one zone.
+  whenUnsatisfiable: DoNotSchedule
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+  prometheusRule:
+    enabled: true
+
+networkPolicy:
+  enabled: true
