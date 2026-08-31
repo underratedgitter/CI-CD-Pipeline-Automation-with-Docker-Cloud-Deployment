@@ -42,7 +42,7 @@ A few details that are deliberate rather than incidental:
 - **`--atomic` on the upgrade.** If the new pods never pass readiness, Helm rolls
   back and the previous version keeps serving, rather than leaving the release
   half-applied.
-- **Actions are pinned to releases.** `aquasecurity/trivy-action@0.28.0`, not
+- **Actions are pinned to releases.** `aquasecurity/trivy-action@v0.36.0`, not
   `@master` — a floating reference runs whatever is upstream at the moment the
   job starts, which is somebody else's `main` branch with write access to the run.
 
