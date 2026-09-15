@@ -10,11 +10,24 @@
     "sourceType": "module"
   },
   "rules": {
-    "no-unused-vars": ["error", { "argsIgnorePattern": "^_" }],
+    "no-unused-vars": [
+      "error",
+      {
+        "argsIgnorePattern": "^_"
+      }
+    ],
     "no-console": "warn",
     "eqeqeq": "error",
     "no-var": "error",
     "prefer-const": "error"
   },
-  "ignorePatterns": ["node_modules/", "coverage/"]
+  "ignorePatterns": ["node_modules/", "coverage/"],
+  "overrides": [
+    {
+      "files": ["app.js", "traffic-gen.js"],
+      "rules": {
+        "no-console": "off"
+      }
+    }
+  ]
 }
