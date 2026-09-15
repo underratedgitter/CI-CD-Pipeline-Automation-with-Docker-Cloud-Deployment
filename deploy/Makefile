@@ -9,6 +9,8 @@ RELEASE  := pipeline-app
 CHART    := helm/pipeline-app
 IMAGE    := ghcr.io/underratedgitter/ci-cd-pipeline-app
 TAG      := dev
+# The project lives under kubernetes/, not kubernetes-sigs/ — the sigs path 404s.
+INGRESS_VERSION := controller-v1.15.1
 
 .PHONY: up down cluster ingress image install test lint template status logs
 
@@ -19,7 +21,7 @@ cluster:
 	kubectl config use-context kind-$(CLUSTER)
 
 ingress:
-	kubectl apply -f https://raw.githubusercontent.com/kubernetes-sigs/ingress-nginx/controller-v1.11.2/deploy/static/provider/kind/deploy.yaml
+	kubectl apply -f https://raw.githubusercontent.com/kubernetes/ingress-nginx/$(INGRESS_VERSION)/deploy/static/provider/kind/deploy.yaml
 	kubectl -n ingress-nginx wait --for=condition=ready pod \
 		--selector=app.kubernetes.io/component=controller --timeout=180s
 
