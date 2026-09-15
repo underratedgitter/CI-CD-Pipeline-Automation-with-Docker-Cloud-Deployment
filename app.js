@@ -122,9 +122,14 @@ appInfo.labels(VERSION, process.version, NODE_ENV).set(1);
 // ── Metrics Middleware ───────────────────────────────────────────────────────
 app.use(express.json({ limit: '10kb' }));
 
+// Label by known route, not raw path: every distinct URL (scanners probing
+// /wp-login.php, /.env, random IDs) otherwise mints new time series without bound.
+const KNOWN_ROUTES = new Set(['/', '/health', '/ready', '/info']);
+const routeLabel = (path) => (KNOWN_ROUTES.has(path) ? path : 'unmatched');
+
 app.use((req, res, next) => {
   if (req.path === '/metrics') return next();
-  const route = req.path;
+  const route = routeLabel(req.path);
   const method = req.method;
   httpRequestsInProgress.labels(method, route).inc();
   const end = httpRequestDuration.startTimer({ method, route });

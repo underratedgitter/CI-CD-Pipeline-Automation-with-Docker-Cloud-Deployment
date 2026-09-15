@@ -62,6 +62,14 @@ describe('GET /metrics', () => {
     expect(res.text).toContain('http_request_duration_seconds');
     expect(res.text).toContain('nodejs_app_info');
   });
+
+  it('collapses unknown paths into one route label', async () => {
+    await request(app).get('/scanner-probe-a1');
+    await request(app).get('/scanner-probe-b2');
+    const res = await request(app).get('/metrics');
+    expect(res.text).not.toContain('scanner-probe');
+    expect(res.text).toContain('route="unmatched"');
+  });
 });
 
 // ── GET /info ────────────────────────────────────────────────────────────────

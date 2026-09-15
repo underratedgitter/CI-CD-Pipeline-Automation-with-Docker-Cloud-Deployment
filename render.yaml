@@ -32,8 +32,10 @@ services:
         value: https://prometheus-monitoring-service.onrender.com
       - key: GF_SECURITY_ADMIN_USER
         value: admin
+      # A public Grafana must not ship admin/admin; Render generates a random
+      # password (visible under the service's Environment tab).
       - key: GF_SECURITY_ADMIN_PASSWORD
-        value: admin
+        generateValue: true
       - key: GF_USERS_ALLOW_SIGN_UP
         value: "false"
       - key: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
