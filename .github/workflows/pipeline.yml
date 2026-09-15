@@ -271,13 +271,18 @@ jobs:
         run: |
           set -euo pipefail
           code=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
-          [ "$code" = "200" ] || { echo "Render hook returned $code"; exit 1; }
-          echo "Render deploy triggered"
+          # Render answers 200 when it starts a deploy and 202 when it queues one
+          # (for example behind the auto-deploy a push already started). Both
+          # mean the deploy was accepted; anything outside 2xx is a real failure.
+          case "$code" in
+            2??) echo "Render deploy triggered (HTTP $code)" ;;
+            *)   echo "Render hook returned $code"; exit 1 ;;
+          esac
 
       - name: Wait for the new version to answer
         run: |
           set -euo pipefail
-          url="${{ vars.RENDER_URL || 'https://ci-cd-pipeline-automation-with-docker.onrender.com' }}/health"
+          url="${{ vars.RENDER_URL || 'https://ci-cd-pipeline-automation-app.onrender.com' }}/health"
           # Poll rather than sleep for a fixed interval. A free-tier cold start is
           # not a fixed length, so a single `sleep 30` either wastes time or
           # reports a failure that has not happened.
