@@ -1,2 +1,4 @@
 User-agent: *
 Allow: /
+
+Sitemap: https://ci-cd-pipeline-automation-app.onrender.com/sitemap.xml

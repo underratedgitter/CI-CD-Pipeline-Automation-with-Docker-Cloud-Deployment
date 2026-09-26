@@ -22,10 +22,9 @@ npm run preview # preview the production build locally
 
 This site ships through the CI/CD pipeline in the repository root. The Dockerfile builds `dist/` in its own stage and the Express app serves it at `/`, so pushing to `main` lints, builds, scans and deploys it along with everything else. See the root `README.md`.
 
-### After deploying
+### Live URL
 
-- In `index.html`, change `og:image` and `twitter:image` from `/og-image.png` to the full URL (e.g. `https://yourdomain.com/og-image.png`). LinkedIn and WhatsApp ignore relative image paths.
-- Add a `public/sitemap.xml` listing the live URL, and a `Sitemap: https://yourdomain.com/sitemap.xml` line to `public/robots.txt`.
+The site is live at https://ci-cd-pipeline-automation-app.onrender.com/. `index.html` (canonical, `og:url`, `og:image`, `twitter:image`), `public/robots.txt` and `public/sitemap.xml` all hard-code that address. Update all four if the domain changes.
 
 ## Notes
 
