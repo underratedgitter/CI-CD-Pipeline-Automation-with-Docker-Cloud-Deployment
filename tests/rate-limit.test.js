@@ -20,11 +20,11 @@ describe('Rate limiting — over the limit', () => {
 
     for (let i = 0; i < 3; i += 1) {
       // eslint-disable-next-line no-await-in-loop
-      const res = await request(app).get('/');
+      const res = await request(app).get('/api/status');
       expect(res.statusCode).toBe(200);
     }
 
-    const limited = await request(app).get('/');
+    const limited = await request(app).get('/api/status');
     expect(limited.statusCode).toBe(429);
     expect(limited.body).toHaveProperty('error', 'Too Many Requests');
     expect(limited.body).toHaveProperty('retryAfter', 60);

@@ -9,7 +9,18 @@ COPY package.json package-lock.json* ./
 # Install production dependencies only
 RUN npm ci --omit=dev
 
-# ── Stage 2: final image ───────────────────────────────────────────────────────
+# ── Stage 2: build the portfolio (static site) ─────────────────────────────────
+FROM node:20-alpine AS portfolio
+
+WORKDIR /portfolio
+
+COPY portfolio/package.json portfolio/package-lock.json ./
+RUN npm ci
+
+COPY portfolio/ ./
+RUN npm run build
+
+# ── Stage 3: final image ───────────────────────────────────────────────────────
 FROM node:20-alpine
 
 WORKDIR /app
@@ -23,6 +34,9 @@ COPY --from=deps /app/node_modules ./node_modules
 # Copy application source
 COPY app.js ./
 COPY package.json ./
+
+# Only the built site; the portfolio's toolchain stays in its build stage
+COPY --from=portfolio /portfolio/dist ./portfolio/dist
 
 # Own files as non-root user
 RUN chown -R appuser:appgroup /app

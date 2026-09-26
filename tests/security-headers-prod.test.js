@@ -17,7 +17,7 @@ describe('Security headers — production environment', () => {
     const request = require('supertest');
     const app = require('../app');
 
-    const res = await request(app).get('/');
+    const res = await request(app).get('/api/status');
     expect(res.headers['strict-transport-security']).toBe('max-age=31536000; includeSubDomains');
   });
 });

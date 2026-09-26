@@ -21,7 +21,7 @@
     "no-var": "error",
     "prefer-const": "error"
   },
-  "ignorePatterns": ["node_modules/", "coverage/"],
+  "ignorePatterns": ["node_modules/", "coverage/", "portfolio/", "tests/fixtures/"],
   "overrides": [
     {
       "files": ["app.js", "traffic-gen.js"],

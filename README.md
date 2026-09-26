@@ -1,6 +1,6 @@
 # CI/CD Pipeline Automation
 
-A small Node service used as a vehicle for the parts around it: a GitHub Actions pipeline that gates, builds, scans and deploys; a hardened multi-stage Docker image; Prometheus instrumentation and Grafana dashboards; a Helm chart that runs the whole thing on Kubernetes; and alert rules that fire on the things that actually page someone.
+A small Node service — which also serves my portfolio site at `/` — used as a vehicle for the parts around it: a GitHub Actions pipeline that gates, builds, scans and deploys; a hardened multi-stage Docker image; Prometheus instrumentation and Grafana dashboards; a Helm chart that runs the whole thing on Kubernetes; and alert rules that fire on the things that actually page someone.
 
 Code push to a running cloud deployment in under five minutes.
 
@@ -14,6 +14,7 @@ Code push to a running cloud deployment in under five minutes.
 |---|---|---|
 | **Lint & Test** | ESLint, then Jest with coverage thresholds | yes |
 | **Security Audit** | `npm audit` against the dependency tree | yes |
+| **Lint & Build Portfolio** | `oxlint`, then `tsc -b && vite build` on `portfolio/` | yes |
 | **Lint & Validate Chart** | `helm lint` on both value sets, then renders the chart and checks it against the real Kubernetes API schemas with `kubeconform`, then a Trivy config scan | yes |
 | **Build & Push** | Buildx build, push to GHCR, **Trivy** scans the pushed image *by digest* | push events only |
 | **Deploy to Kubernetes** | `helm upgrade --install --atomic` at the built digest, then `helm test` | push events, if a cluster is configured |
@@ -50,11 +51,12 @@ A few details that are deliberate rather than incidental:
 
 ## The image
 
-Two stages, so build tooling never reaches the final layer:
+Three stages, so build tooling never reaches the final layer:
 
 ```dockerfile
-FROM node:20-alpine AS deps      # npm ci --omit=dev
-FROM node:20-alpine              # copies only node_modules + source
+FROM node:20-alpine AS deps       # npm ci --omit=dev
+FROM node:20-alpine AS portfolio  # npm ci && vite build
+FROM node:20-alpine               # copies node_modules, source, portfolio/dist
 ```
 
 Manifests are copied before source so a code change doesn't invalidate the dependency layer. The container runs as an unprivileged `appuser`, not root, and carries a `HEALTHCHECK` that polls `/health` every 30 seconds — so an unhealthy container is visible to Docker and to any orchestrator above it.
@@ -98,7 +100,8 @@ Each carries a `for:` duration, so a single scrape blip doesn't page anyone. `Lo
 
 | Route | Returns |
 |---|---|
-| `GET /` | service name, version, environment |
+| `GET /` | the portfolio site (static files from `portfolio/dist`) |
+| `GET /api/status` | service name, version, environment |
 | `GET /health` | liveness, with uptime and memory |
 | `GET /ready` | readiness, for orchestrator gating |
 | `GET /metrics` | Prometheus exposition format |
@@ -108,6 +111,8 @@ Each carries a `for:` duration, so a single scrape blip doesn't page anyone. `Lo
 
 Rate limiting is a fixed window, 100 requests per minute per IP by default, tunable with `RATE_LIMIT_MAX`.
 
+Portfolio files are served ahead of the limiter too: one page view is a dozen requests, so counting them would lock a visitor out after a few reloads. They share one `static` route label in the metrics. Vite's content-hashed `assets/` are cached as immutable; everything else is sent with `no-cache` so a deploy shows up on the next load.
+
 ---
 
 ## Running it
@@ -115,9 +120,13 @@ Rate limiting is a fixed window, 100 requests per minute per IP by default, tuna
 ```bash
 npm install
 npm run dev          # node --watch
-npm test             # jest, 20 tests, with coverage
+npm test             # jest, with coverage
 npm run lint
 ```
+
+`npm run dev` serves the portfolio only if it has been built. Build it with
+`cd portfolio && npm install && npm run build`, or run `npm run dev` inside
+`portfolio/` for Vite's hot-reloading dev server.
 
 The whole stack — app, Prometheus and Grafana on a shared network:
 
@@ -216,7 +225,8 @@ it on — VPC, cluster, load balancer, registry, IAM — is Terraform in
 ## Layout
 
 ```
-app.js                        service, metrics, rate limiting
+app.js                        service, metrics, rate limiting, serves the portfolio
+portfolio/                    the portfolio site (React + Vite), built into the image
 traffic-gen.js                load generator for the dashboards
 Dockerfile                    multi-stage, non-root, healthcheck
 docker-compose.yml            app + prometheus + grafana
@@ -232,5 +242,5 @@ deploy/
   Makefile                    up / test / lint / template / down
 .github/workflows/pipeline.yml
 render.yaml                   deploy target
-tests/app.test.js             23 tests
+tests/                        jest + supertest suites
 ```

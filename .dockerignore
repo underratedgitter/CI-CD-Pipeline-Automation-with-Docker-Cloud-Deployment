@@ -10,3 +10,5 @@ tests
 docker-compose.yml
 Dockerfile
 README.md
+portfolio/node_modules
+portfolio/dist

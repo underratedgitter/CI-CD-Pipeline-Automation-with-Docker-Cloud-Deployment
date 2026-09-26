@@ -2,6 +2,8 @@
 
 const express = require('express');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
 const client = require('prom-client');
 const pkg = require('./package.json');
 
@@ -9,6 +11,9 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const VERSION = pkg.version;
+// The portfolio's Vite build. The Dockerfile builds it into this path; locally,
+// run `npm run build` inside portfolio/ first.
+const PORTFOLIO_DIR = process.env.PORTFOLIO_DIR || path.join(__dirname, 'portfolio', 'dist');
 
 // Flipped by the shutdown handler. Kubernetes reads it through /ready, which is
 // how the pod leaves the Service's endpoint list before it stops accepting work.
@@ -124,30 +129,54 @@ app.use(express.json({ limit: '10kb' }));
 
 // Label by known route, not raw path: every distinct URL (scanners probing
 // /wp-login.php, /.env, random IDs) otherwise mints new time series without bound.
-const KNOWN_ROUTES = new Set(['/', '/health', '/ready', '/info']);
-const routeLabel = (path) => (KNOWN_ROUTES.has(path) ? path : 'unmatched');
+// Portfolio files (hashed JS/CSS, fonts, images) all share the 'static' label;
+// which file was served is only known once express.static has handled it.
+const KNOWN_ROUTES = new Set(['/', '/health', '/ready', '/info', '/api/status']);
+const routeLabel = (path, servedStatic) =>
+  KNOWN_ROUTES.has(path) ? path : servedStatic ? 'static' : 'unmatched';
 
 app.use((req, res, next) => {
   if (req.path === '/metrics') return next();
-  const route = routeLabel(req.path);
+  const inProgressRoute = routeLabel(req.path, false);
   const method = req.method;
-  httpRequestsInProgress.labels(method, route).inc();
-  const end = httpRequestDuration.startTimer({ method, route });
+  httpRequestsInProgress.labels(method, inProgressRoute).inc();
+  const end = httpRequestDuration.startTimer({ method });
   res.on('finish', () => {
+    const route = routeLabel(req.path, res.locals.servedStatic === true);
     const statusCode = String(res.statusCode);
     httpRequestsTotal.labels(method, route, statusCode).inc();
-    end({ status_code: statusCode });
-    httpRequestsInProgress.labels(method, route).dec();
+    end({ route, status_code: statusCode });
+    httpRequestsInProgress.labels(method, inProgressRoute).dec();
     if (res.statusCode >= 400) httpErrorsTotal.labels(method, route, statusCode).inc();
   });
   next();
 });
 
+// ── Portfolio ────────────────────────────────────────────────────────────────
+// Ahead of the rate limiter: one page view is a dozen requests (HTML, CSS, JS,
+// fonts, images), so counting them would lock a visitor out after a few reloads.
+if (fs.existsSync(path.join(PORTFOLIO_DIR, 'index.html'))) {
+  app.use(
+    express.static(PORTFOLIO_DIR, {
+      index: 'index.html',
+      setHeaders: (res, filePath) => {
+        res.locals.servedStatic = true;
+        // Vite content-hashes everything under assets/, so those never change
+        // under the same name. index.html must be revalidated to pick up a deploy.
+        const hashed = filePath.startsWith(path.join(PORTFOLIO_DIR, 'assets') + path.sep);
+        res.setHeader('Cache-Control', hashed ? 'public, max-age=31536000, immutable' : 'no-cache');
+      },
+    })
+  );
+} else if (require.main === module) {
+  console.warn(`[WARN] No portfolio build at ${PORTFOLIO_DIR}; GET / will return 404.`);
+}
+
 app.use(rateLimit);
 
 // ── Routes ───────────────────────────────────────────────────────────────────
 
-app.get('/', (_req, res) => {
+app.get('/api/status', (_req, res) => {
   res.json({ status: 'ok', message: 'hello Sir', version: VERSION, environment: NODE_ENV });
 });
 
@@ -204,7 +233,7 @@ app.use((_req, res) => {
   res.status(404).json({
     error: 'Not Found',
     requestId: _req.id,
-    availableEndpoints: ['GET /', 'GET /health', 'GET /ready', 'GET /metrics', 'GET /info'],
+    availableEndpoints: ['GET /', 'GET /api/status', 'GET /health', 'GET /ready', 'GET /metrics', 'GET /info'],
   });
 });
 

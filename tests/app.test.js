@@ -1,22 +1,22 @@
 const request = require('supertest');
 const app = require('../app');
 
-// ── GET / ────────────────────────────────────────────────────────────────────
-describe('GET /', () => {
+// ── GET /api/status ──────────────────────────────────────────────────────────
+describe('GET /api/status', () => {
   it('returns status ok and a message', async () => {
-    const res = await request(app).get('/');
+    const res = await request(app).get('/api/status');
     expect(res.statusCode).toBe(200);
     expect(res.body).toHaveProperty('status', 'ok');
     expect(res.body).toHaveProperty('message');
   });
 
   it('returns version from package.json', async () => {
-    const res = await request(app).get('/');
+    const res = await request(app).get('/api/status');
     expect(res.body.version).toBe(require('../package.json').version);
   });
 
   it('includes environment', async () => {
-    const res = await request(app).get('/');
+    const res = await request(app).get('/api/status');
     expect(res.body).toHaveProperty('environment');
   });
 });
@@ -106,7 +106,7 @@ describe('404 handler', () => {
 // ── Security Headers ─────────────────────────────────────────────────────────
 describe('Security headers', () => {
   it('includes all security headers', async () => {
-    const res = await request(app).get('/');
+    const res = await request(app).get('/api/status');
     expect(res.headers['x-frame-options']).toBe('DENY');
     expect(res.headers['x-content-type-options']).toBe('nosniff');
     expect(res.headers['x-xss-protection']).toBe('1; mode=block');
@@ -115,13 +115,13 @@ describe('Security headers', () => {
   });
 
   it('includes request ID header', async () => {
-    const res = await request(app).get('/');
+    const res = await request(app).get('/api/status');
     expect(res.headers['x-request-id']).toBeDefined();
   });
 
   it('returns same request ID if provided', async () => {
     const customId = 'test-request-123';
-    const res = await request(app).get('/').set('X-Request-Id', customId);
+    const res = await request(app).get('/api/status').set('X-Request-Id', customId);
     expect(res.headers['x-request-id']).toBe(customId);
   });
 });
@@ -129,7 +129,7 @@ describe('Security headers', () => {
 // ── Rate Limiting ────────────────────────────────────────────────────────────
 describe('Rate Limiting', () => {
   it('allows requests under the limit', async () => {
-    const res = await request(app).get('/');
+    const res = await request(app).get('/api/status');
     expect(res.statusCode).toBe(200);
   });
 
@@ -147,13 +147,13 @@ describe('Rate Limiting', () => {
 // ── Metrics Tracking ─────────────────────────────────────────────────────────
 describe('Metrics Tracking', () => {
   it('increments request counter', async () => {
-    await request(app).get('/');
+    await request(app).get('/api/status');
     const res = await request(app).get('/metrics');
     expect(res.text).toContain('http_requests_total');
   });
 
   it('tracks response duration', async () => {
-    await request(app).get('/');
+    await request(app).get('/api/status');
     const res = await request(app).get('/metrics');
     expect(res.text).toContain('http_request_duration_seconds');
   });
