@@ -47,6 +47,11 @@ A few details that are deliberate rather than incidental:
   `@master` — a floating reference runs whatever is upstream at the moment the
   job starts, which is somebody else's `main` branch with write access to the run.
 
+A second workflow, `.github/workflows/keep-alive.yml`, pings `/health` every five
+minutes so the Render free-tier app never sleeps and visitors skip the cold start.
+It keeps only the app awake: the free plan's 750 instance-hours a month cover one
+always-on service, not three.
+
 ---
 
 ## The image

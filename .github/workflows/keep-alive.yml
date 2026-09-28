@@ -1,0 +1,44 @@
+name: Keep Render awake
+
+# Render's free plan sleeps a service after 15 minutes without traffic, and the
+# next visitor waits through a cold start. Render cron jobs are not free, so the
+# ping runs here instead.
+#
+# Every 5 minutes rather than 10: GitHub delays scheduled runs under load, and a
+# late run must still land inside the 15-minute window.
+#
+# Only the app is pinged. The free plan's 750 instance-hours a month cover one
+# always-on service; keeping Prometheus and Grafana awake too would use them up
+# in about ten days and suspend all three until the month resets.
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  ping:
+    name: Ping /health
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Ping the app
+        env:
+          URL: ${{ vars.RENDER_URL || 'https://ci-cd-pipeline-automation-app.onrender.com' }}/health
+        run: |
+          set -euo pipefail
+          # Retried because a wake-up from sleep can outlast a single request.
+          # Failing after that is deliberate: a red run is the outage signal.
+          for i in 1 2 3; do
+            code=$(curl -s -o /dev/null -m 60 -w "%{http_code}" "$URL" || echo 000)
+            if [ "$code" = "200" ]; then
+              echo "Healthy (attempt $i)"
+              exit 0
+            fi
+            echo "attempt $i: $code"
+            sleep 10
+          done
+          echo "::error::$URL did not return 200 after 3 attempts"
+          exit 1
