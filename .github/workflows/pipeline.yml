@@ -52,7 +52,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - run: npm ci
@@ -73,12 +73,18 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
 
       - run: npm ci
 
-      - name: Run npm audit
+      # Runtime dependencies are what ships in the image, so a high or
+      # critical advisory there blocks the build. Dev-only tooling is reported
+      # without failing the job.
+      - name: Audit runtime dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Audit dev dependencies (report only)
         run: npm audit --audit-level=high
         continue-on-error: true
 
@@ -98,7 +104,7 @@ jobs:
 
       - uses: actions/setup-node@v7
         with:
-          node-version: '20'
+          node-version: '24'
           cache: 'npm'
           cache-dependency-path: portfolio/package-lock.json
 
