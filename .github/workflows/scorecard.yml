@@ -5,16 +5,20 @@ name: OpenSSF Scorecard
 # Results go to the Security tab and the public badge in the README.
 #
 # publish_results makes the Scorecard API verify this file before accepting
-# results, so it follows the official template's shape exactly: read-all at the
-# top, ubuntu-latest, no concurrency, timeouts, env or defaults, and only the
-# approved actions in the job. Don't "harden" it beyond that; the first stricter
-# version was rejected.
+# results, so it keeps the official template's shape: read-all at the top,
+# ubuntu-latest, no concurrency, timeouts, env or defaults, and only the
+# approved actions in the job.
+#
+# Weekly, and when branch protection changes; not on every push. Push runs
+# failed three seconds into the analysis whenever they landed close together
+# (two merges 13 seconds apart, five in five minutes), and passed with the
+# same file when spaced out, so the shape was never the cause. The score
+# describes the repository's practices and does not move from push to push;
+# OpenSSF's own public scans are weekly too.
 on:
   branch_protection_rule:
   schedule:
     - cron: '41 5 * * 1'
-  push:
-    branches: [main]
 
 permissions: read-all
 
