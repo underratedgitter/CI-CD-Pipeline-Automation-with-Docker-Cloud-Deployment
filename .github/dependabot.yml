@@ -1,0 +1,63 @@
+# Keeps every pinned dependency current: the SHA-pinned actions, both npm
+# lockfiles and the Docker base images. Updates are grouped so a week's worth
+# arrives as one pull request per ecosystem rather than one per package.
+#
+# cooldown: a release is only proposed once it has been public for a few days.
+# Hijacked packages are usually caught and pulled within that window, so a
+# compromised version is unlikely to ever reach a pull request here.
+version: 2
+
+updates:
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns: ['*']
+    commit-message:
+      prefix: ci
+
+  - package-ecosystem: npm
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      runtime:
+        dependency-type: production
+      tooling:
+        dependency-type: development
+    commit-message:
+      prefix: deps
+      prefix-development: chore
+
+  - package-ecosystem: npm
+    directory: /portfolio
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+      semver-major-days: 14
+    groups:
+      portfolio:
+        patterns: ['*']
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: deps

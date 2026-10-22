@@ -6,8 +6,9 @@ WORKDIR /app
 # Copy only manifest files first for better layer caching
 COPY package.json package-lock.json* ./
 
-# Install production dependencies only
-RUN npm ci --omit=dev
+# Production dependencies only. --ignore-scripts: install scripts are how a
+# compromised package runs code at build time, and nothing here needs one.
+RUN npm ci --omit=dev --ignore-scripts
 
 # ── Stage 2: build the portfolio (static site) ─────────────────────────────────
 FROM node:24-alpine AS portfolio
@@ -15,7 +16,7 @@ FROM node:24-alpine AS portfolio
 WORKDIR /portfolio
 
 COPY portfolio/package.json portfolio/package-lock.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 
 COPY portfolio/ ./
 RUN npm run build

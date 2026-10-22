@@ -1,7 +1,8 @@
 name: CI/CD Pipeline
 
-# Pull requests and manual runs check everything, including building and
-# smoke-testing the image. Only a push to main publishes and deploys.
+# Pull requests and manual runs check everything, including building the
+# image, testing it in a browser and on a real Kubernetes cluster. Only a push
+# to main publishes and deploys.
 on:
   push:
     branches: [main]
@@ -12,6 +13,7 @@ on:
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/ci-cd-pipeline-app
+  HELM_VERSION: v3.22.1
 
 # One run per branch at a time. On main a newer push waits: two overlapping helm
 # upgrades on the same release leave it stuck in pending-upgrade and need a
@@ -21,11 +23,12 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
-  contents: read
+  contents: read # checkout; every job that needs more asks for it itself
 
-# Actions are pinned to full commit SHAs, with the release as a comment. A tag
-# is a pointer the action's owner (or whoever compromises them) can move; a SHA
-# is the exact code that was reviewed.
+# Actions are pinned to full commit SHAs, with the release as a comment, and
+# container tools to image digests. A tag is a pointer its owner (or whoever
+# compromises them) can move; a SHA is the exact code that was reviewed.
+# Dependabot keeps the pins current (.github/dependabot.yml).
 
 jobs:
   # ── 0. Which optional targets are configured ─────────────────────────────────
@@ -44,14 +47,46 @@ jobs:
 
     steps:
       - id: check
+        env:
+          HAS_DOCKERHUB: ${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}
+          HAS_KUBERNETES: ${{ secrets.KUBE_CONFIG != '' }}
+          HAS_RENDER: ${{ secrets.RENDER_DEPLOY_HOOK_URL != '' }}
         run: |
           {
-            echo "dockerhub=${{ secrets.DOCKER_USERNAME != '' && secrets.DOCKER_PASSWORD != '' }}"
-            echo "kubernetes=${{ secrets.KUBE_CONFIG != '' }}"
-            echo "render=${{ secrets.RENDER_DEPLOY_HOOK_URL != '' }}"
+            echo "dockerhub=$HAS_DOCKERHUB"
+            echo "kubernetes=$HAS_KUBERNETES"
+            echo "render=$HAS_RENDER"
           } >> "$GITHUB_OUTPUT"
 
-  # ── 1. Lint & Test ───────────────────────────────────────────────────────────
+  # ── 1. The workflows themselves ──────────────────────────────────────────────
+  # A workflow runs with the repository's token, so it is code worth linting:
+  # actionlint for correctness (with shellcheck on every run: block), zizmor for
+  # security (template injection, credential persistence, impostor commits).
+  workflows:
+    name: Lint Workflows
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: actionlint
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo \
+            rhysd/actionlint:1.7.12@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667 \
+            -color
+
+      - name: zizmor
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          docker run --rm -v "$PWD:/repo" -w /repo -e GH_TOKEN \
+            ghcr.io/zizmorcore/zizmor:1.31.1@sha256:42d409dbb851d4c5d35a058cf042b828bea1e3f2884378c526eb0974780e18d9 \
+            --format=github .github/workflows
+
+  # ── 2. Lint & Test ───────────────────────────────────────────────────────────
   test:
     name: Lint & Test
     runs-on: ubuntu-24.04
@@ -67,7 +102,9 @@ jobs:
           node-version: '24'
           cache: 'npm'
 
-      - run: npm ci
+      # --ignore-scripts: install scripts are how a compromised package runs
+      # code on the runner. Nothing this project depends on needs one.
+      - run: npm ci --ignore-scripts
 
       - name: Run linter
         run: npm run lint --if-present
@@ -75,7 +112,7 @@ jobs:
       - name: Run tests
         run: npm test
 
-  # ── 2. Security audit ────────────────────────────────────────────────────────
+  # ── 3. Security audit ────────────────────────────────────────────────────────
   security:
     name: Security Audit
     runs-on: ubuntu-24.04
@@ -91,7 +128,7 @@ jobs:
           node-version: '24'
           cache: 'npm'
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
 
       # Runtime dependencies are what ships in the image, so a high or
       # critical advisory there blocks the build. Dev-only tooling is reported
@@ -103,7 +140,13 @@ jobs:
         run: npm audit --audit-level=high
         continue-on-error: true
 
-  # ── 2b. Portfolio ────────────────────────────────────────────────────────────
+      # Every installed package must carry a valid registry signature, and
+      # provenance where the package publishes it: a tarball swapped on the way
+      # from the registry fails here.
+      - name: Verify package signatures
+        run: npm audit signatures
+
+  # ── 3b. Portfolio ────────────────────────────────────────────────────────────
   # Lints and type-checks the portfolio on its own, so a failure names the
   # portfolio rather than surfacing as a failed Docker build.
   portfolio:
@@ -126,7 +169,10 @@ jobs:
           cache: 'npm'
           cache-dependency-path: portfolio/package-lock.json
 
-      - run: npm ci
+      - run: npm ci --ignore-scripts
+
+      - name: Verify package signatures
+        run: npm audit signatures
 
       - name: Run linter
         run: npm run lint
@@ -134,7 +180,7 @@ jobs:
       - name: Type-check and build
         run: npm run build
 
-  # ── 3. Chart ─────────────────────────────────────────────────────────────────
+  # ── 4. Chart ─────────────────────────────────────────────────────────────────
   # Renders the chart and checks the result against the real Kubernetes API
   # schemas. A chart that only gets validated at `helm upgrade` time is validated
   # against production.
@@ -150,7 +196,7 @@ jobs:
 
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.16.2
+          version: ${{ env.HELM_VERSION }}
 
       - name: Lint both value sets
         run: |
@@ -158,29 +204,23 @@ jobs:
           helm lint deploy/helm/pipeline-app --strict \
             --values deploy/helm/pipeline-app/values-prod.yaml
 
-      - name: Install kubeconform
+      - name: Render with every optional object switched on
         run: |
-          curl -fsSL -o kubeconform.tar.gz \
-            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
-          tar xzf kubeconform.tar.gz kubeconform
-          sudo install -m 0755 kubeconform /usr/local/bin/kubeconform
-
-      - name: Render and validate against the Kubernetes schemas
-        run: |
-          set -euo pipefail
-          # Everything optional switched on, so the CRD-gated templates are
-          # rendered too instead of being skipped by the defaults.
           helm template pipeline-app deploy/helm/pipeline-app \
             --namespace pipeline \
             --set monitoring.serviceMonitor.enabled=true \
             --set monitoring.prometheusRule.enabled=true \
             --set networkPolicy.enabled=true \
             > rendered.yaml
-          # ServiceMonitor and PrometheusRule are CRDs and have no schema in the
-          # upstream catalogue; -ignore-missing-schemas skips those two rather
-          # than failing on them. Every core object is checked strictly.
-          kubeconform -strict -summary -ignore-missing-schemas \
-            -kubernetes-version 1.29.0 rendered.yaml
+
+      # ServiceMonitor and PrometheusRule are CRDs and have no schema in the
+      # upstream catalogue; -ignore-missing-schemas skips those two rather than
+      # failing on them. Every core object is checked strictly.
+      - name: Validate against the Kubernetes schemas
+        run: |
+          docker run --rm -v "$PWD:/work" -w /work \
+            ghcr.io/yannh/kubeconform:v0.6.7@sha256:0925177fb05b44ce18574076141b5c3d83235e1904d3f952182ac99ddc45762c \
+            -strict -summary -ignore-missing-schemas -kubernetes-version 1.29.0 rendered.yaml
 
       - name: Scan the rendered manifests for misconfiguration
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
@@ -191,10 +231,10 @@ jobs:
           exit-code: '0'
           severity: HIGH,CRITICAL
 
-  # ── 4. Build, smoke-test and scan the image ──────────────────────────────────
-  # Runs on pull requests too, so an image that builds but does not start is
-  # caught before merge. On main the tested image is saved, and publish pushes
-  # exactly that image rather than a rebuild.
+  # ── 5. Build and test the image ──────────────────────────────────────────────
+  # Runs on pull requests too, so an image that builds but does not start, or a
+  # page the CSP breaks, is caught before merge. The tested image is saved, and
+  # everything after this job uses exactly that image rather than a rebuild.
   image:
     name: Build & Test Image
     runs-on: ubuntu-24.04
@@ -223,6 +263,7 @@ jobs:
           push: false
           tags: pipeline-app:ci
           labels: ${{ steps.meta.outputs.labels }}
+          build-args: REVISION=${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
           provenance: false
@@ -230,54 +271,124 @@ jobs:
       - name: Smoke test the container
         run: bash tests/smoke.sh pipeline-app:ci
 
+      - name: Render the portfolio in Chrome under the real CSP
+        run: |
+          docker run --detach --name browser-check --publish 127.0.0.1:3999:3000 pipeline-app:ci
+          for _ in $(seq 1 30); do curl -sf -o /dev/null http://127.0.0.1:3999/health && break; sleep 1; done
+          bash tests/browser/csp-check.sh http://127.0.0.1:3999
+
       - name: Report HIGH and CRITICAL vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: pipeline-app:ci
           format: table
           exit-code: '0'
-          severity: CRITICAL,HIGH
+          severity: CRITICAL,HIGH,MEDIUM
           ignore-unfixed: true
 
-      # Blocks only on what can be fixed: a CRITICAL with no released fix would
+      # Blocks only on what can be fixed: a finding with no released fix would
       # fail every run without anything to act on.
-      - name: Block on fixable CRITICAL vulnerabilities
+      - name: Block on fixable HIGH and CRITICAL vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           image-ref: pipeline-app:ci
           format: table
           exit-code: '1'
-          severity: CRITICAL
+          severity: CRITICAL,HIGH
           ignore-unfixed: true
 
-      - name: Keep the tested image for publishing
-        if: github.event_name == 'push'
+      - name: Keep the tested image
         run: docker save pipeline-app:ci | gzip > image.tar.gz
 
-      - if: github.event_name == 'push'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: image
           path: image.tar.gz
           retention-days: 1
 
-  # ── 5. Publish ───────────────────────────────────────────────────────────────
+  # ── 6. Kubernetes integration test ───────────────────────────────────────────
+  # The chart installed on a real three-node cluster (kind), then exercised:
+  # the chart's own tests, and a full rollout under continuous traffic that
+  # fails on a single dropped request. Nothing is published unless this passes.
+  kubernetes:
+    name: Kubernetes Integration Test
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: image
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
+
+      - name: Load the tested image
+        run: gunzip -c image.tar.gz | docker load
+
+      - name: Create a three-node cluster
+        uses: helm/kind-action@1544676c07bb3570fcb70166beaa07c4528fd4aa # v1.15.1
+        with:
+          version: v0.33.0
+          config: deploy/kind/cluster.yaml
+          cluster_name: pipeline
+          wait: 180s
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Install the chart with the tested image
+        run: |
+          set -euo pipefail
+          kind load docker-image pipeline-app:ci --name pipeline
+          helm upgrade --install pipeline-app deploy/helm/pipeline-app \
+            --namespace pipeline --create-namespace \
+            --set image.repository=pipeline-app \
+            --set image.tag=ci \
+            --set image.pullPolicy=Never \
+            --set ingress.enabled=false \
+            --wait --timeout 3m
+
+      - name: Run the chart's tests
+        run: helm test pipeline-app --namespace pipeline --logs
+
+      - name: Roll every pod under continuous traffic
+        run: bash deploy/kind/zero-downtime-test.sh pipeline pipeline-app
+
+      - name: Show what went wrong
+        if: failure()
+        run: |
+          kubectl -n pipeline get deploy,rs,pod,svc,pdb,hpa -o wide || true
+          kubectl -n pipeline describe pods || true
+          kubectl -n pipeline get events --sort-by=.lastTimestamp || true
+          kubectl -n pipeline logs -l app.kubernetes.io/instance=pipeline-app --tail=100 --all-containers || true
+
+  # ── 7. Publish ───────────────────────────────────────────────────────────────
+  # Pushes the exact image that passed every test, generates its SBOM, and
+  # attaches signed build provenance (SLSA) and the SBOM to it in the registry.
+  # Anyone can verify both:
+  #   gh attestation verify oci://ghcr.io/<owner>/ci-cd-pipeline-app:latest --owner <owner>
   publish:
     name: Publish Image
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    needs: [guard, image]
+    timeout-minutes: 15
+    needs: [guard, image, kubernetes]
     if: github.event_name == 'push'
 
     permissions:
       contents: read
-      packages: write
+      packages: write # push the image to GHCR
+      id-token: write # keyless Sigstore signing of the attestations
+      attestations: write # store the attestations
+      security-events: write # upload the image scan to the Security tab
 
     outputs:
       digest: ${{ steps.push.outputs.digest }}
 
     steps:
-      # Exactly the image that passed the smoke test and the scan, not a rebuild.
       - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
           name: image
@@ -294,13 +405,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Log in to Docker Hub
-        if: needs.guard.outputs.dockerhub == 'true'
-        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-
       - name: Push, tagged with the commit and latest
         id: push
         env:
@@ -316,10 +420,72 @@ jobs:
             | grep "^$image@sha256:" | head -n 1 || true)
           digest=${ref#*@}
           [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest for $image after push"; exit 1; }
+          echo "image=$image" >> "$GITHUB_OUTPUT"
           echo "digest=$digest" >> "$GITHUB_OUTPUT"
           echo "Published \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"
 
-  # ── 6. Deploy to Kubernetes ──────────────────────────────────────────────────
+      - name: Generate the SBOM
+        uses: anchore/sbom-action@66cbf4bc1f1c0d2edc94016e65bc221b6bb0ad6c # v0.24.3
+        with:
+          image: pipeline-app:ci
+          format: spdx-json
+          output-file: sbom.spdx.json
+          artifact-name: sbom.spdx.json
+          upload-release-assets: false
+
+      # create-storage-record needs an organisation-owned repository.
+      - name: Attest build provenance
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Attest the SBOM
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-name: ${{ steps.push.outputs.image }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          sbom-path: sbom.spdx.json
+          push-to-registry: true
+          create-storage-record: false
+
+      - name: Scan the published image for the Security tab
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: pipeline-app:ci
+          format: sarif
+          output: trivy-image.sarif
+          severity: CRITICAL,HIGH,MEDIUM
+          ignore-unfixed: true
+
+      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+        with:
+          sarif_file: trivy-image.sarif
+          category: trivy-image
+
+      - name: Log in to Docker Hub
+        if: needs.guard.outputs.dockerhub == 'true'
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: Push to Docker Hub
+        if: needs.guard.outputs.dockerhub == 'true'
+        env:
+          DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+        run: |
+          set -euo pipefail
+          image="docker.io/$(printf '%s' "$DOCKER_USERNAME" | tr '[:upper:]' '[:lower:]')/ci-cd-pipeline-app"
+          for tag in "sha-$GITHUB_SHA" latest; do
+            docker tag pipeline-app:ci "$image:$tag"
+            docker push --quiet "$image:$tag"
+          done
+          echo "Also published to \`$image\`" >> "$GITHUB_STEP_SUMMARY"
+
+  # ── 8. Deploy to Kubernetes ──────────────────────────────────────────────────
   deploy-k8s:
     name: Deploy to Kubernetes
     runs-on: ubuntu-24.04
@@ -341,7 +507,7 @@ jobs:
 
       - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
-          version: v3.16.2
+          version: ${{ env.HELM_VERSION }}
 
       # Through env, not ${{ }} in the script: an expression is pasted into the
       # shell source before it runs, so a secret would become code.
@@ -354,7 +520,7 @@ jobs:
           chmod 600 "$HOME/.kube/config"
 
       # Deployed by digest. A tag is a pointer someone can move; a digest is the
-      # image that was smoke-tested and scanned two jobs ago and nothing else.
+      # image that was tested on kind two jobs ago and nothing else.
       - name: Deploy
         env:
           IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
@@ -385,19 +551,29 @@ jobs:
         if: always()
         run: rm -f "$HOME/.kube/config"
 
-  # ── 7. Deploy to Render ──────────────────────────────────────────────────────
-  # Kept because it is what the public demo runs on. The Kubernetes path above is
-  # the one that reflects how this would actually be operated. Render builds its
-  # own image from the Dockerfile, so it waits for publish only so that nothing
-  # deploys unless the tested image passed.
+  # ── 9. Deploy to Render ──────────────────────────────────────────────────────
+  # What the public demo runs on. Render builds its own image from the
+  # Dockerfile, so this waits for publish only so that nothing deploys unless
+  # the tested image passed, then waits for the pushed commit to be live.
   deploy-render:
     name: Deploy to Render
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    timeout-minutes: 15
     needs: [guard, publish]
     if: github.event_name == 'push' && needs.guard.outputs.render == 'true'
 
+    environment:
+      name: render
+      url: ${{ vars.RENDER_URL || 'https://ci-cd-pipeline-automation-app.onrender.com' }}
+
     steps:
+      # Full history, so a newer commit already live can be recognised as
+      # containing this one.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+
       - name: Trigger Render deploy
         env:
           HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
@@ -412,23 +588,31 @@ jobs:
             *)   echo "::error::Render hook returned HTTP $code"; exit 1 ;;
           esac
 
-      - name: Wait for the service to answer
+      # Waiting for /health alone passes on the old version, which keeps
+      # answering while Render builds. /info reports the commit actually served
+      # (Render's RENDER_GIT_COMMIT), so this waits for that to be ours, or a
+      # newer commit that already contains ours.
+      - name: Wait for this commit to be live
         env:
-          URL: ${{ vars.RENDER_URL || 'https://ci-cd-pipeline-automation-app.onrender.com' }}/health
+          URL: ${{ vars.RENDER_URL || 'https://ci-cd-pipeline-automation-app.onrender.com' }}
         run: |
           set -euo pipefail
-          # Poll rather than sleep for a fixed interval. A free-tier cold start is
-          # not a fixed length, so a single `sleep 30` either wastes time or
-          # reports a failure that has not happened. curl prints 000 itself on a
-          # network error; `|| code=000` only keeps set -e from ending the loop.
-          for i in $(seq 1 20); do
-            code=$(curl --silent --output /dev/null --max-time 30 --write-out '%{http_code}' "$URL") || code=000
-            if [ "$code" = "200" ]; then
-              echo "Healthy after attempt $i"
+          for i in $(seq 1 40); do
+            revision=$(curl --silent --max-time 30 "$URL/info" | jq -r '.revision // empty' 2>/dev/null) || revision=""
+            if [ "$revision" = "$GITHUB_SHA" ]; then
+              echo "Commit $GITHUB_SHA is live (attempt $i)"
+              echo "Live on Render: \`$GITHUB_SHA\`" >> "$GITHUB_STEP_SUMMARY"
               exit 0
             fi
-            echo "attempt $i: HTTP $code"
+            if [[ $revision =~ ^[0-9a-f]{40}$ ]]; then
+              git fetch --quiet origin "$revision" 2>/dev/null || true
+              if git merge-base --is-ancestor "$GITHUB_SHA" "$revision" 2>/dev/null; then
+                echo "A newer commit containing this one is live: $revision"
+                exit 0
+              fi
+            fi
+            echo "attempt $i: serving ${revision:-nothing yet}"
             sleep 15
           done
-          echo "::error::$URL never returned 200 within five minutes"
+          echo "::error::$GITHUB_SHA was not live within ten minutes (last: ${revision:-no answer})"
           exit 1
