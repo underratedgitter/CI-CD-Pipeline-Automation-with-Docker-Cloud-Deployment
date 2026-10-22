@@ -1,10 +1,17 @@
 # Keeps every pinned dependency current: the SHA-pinned actions, both npm
-# lockfiles and the Docker base images. Updates are grouped so a week's worth
-# arrives as one pull request per ecosystem rather than one per package.
+# lockfiles, the Dockerfiles and docker-compose.yml.
+#
+# Minor and patch updates are grouped into one pull request per ecosystem.
+# Major updates arrive one per pull request: a major can break things (ESLint
+# 10 dropped the old config format), and grouped with safe patches it blocks
+# all of them behind one migration.
 #
 # cooldown: a release is only proposed once it has been public for a few days.
 # Hijacked packages are usually caught and pulled within that window, so a
 # compromised version is unlikely to ever reach a pull request here.
+#
+# None of these are security fixes; those come separately as Dependabot
+# security updates, enabled in the repository's Security settings.
 version: 2
 
 updates:
@@ -17,7 +24,7 @@ updates:
       default-days: 7
     groups:
       actions:
-        patterns: ['*']
+        update-types: [minor, patch]
     commit-message:
       prefix: ci
 
@@ -32,8 +39,10 @@ updates:
     groups:
       runtime:
         dependency-type: production
+        update-types: [minor, patch]
       tooling:
         dependency-type: development
+        update-types: [minor, patch]
     commit-message:
       prefix: deps
       prefix-development: chore
@@ -48,11 +57,27 @@ updates:
       semver-major-days: 14
     groups:
       portfolio:
-        patterns: ['*']
+        update-types: [minor, patch]
     commit-message:
       prefix: deps
 
   - package-ecosystem: docker
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    cooldown:
+      default-days: 7
+    ignore:
+      # Odd Node majors are never LTS and reach end of life six months after
+      # release (Node 25 was proposed here, then went EOL with unpatched
+      # OpenSSL). Moving to the next LTS major is a deliberate change.
+      - dependency-name: node
+        update-types: [version-update:semver-major]
+    commit-message:
+      prefix: deps
+
+  - package-ecosystem: docker-compose
     directory: /
     schedule:
       interval: weekly

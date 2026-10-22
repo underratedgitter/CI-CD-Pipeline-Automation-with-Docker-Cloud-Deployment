@@ -4,52 +4,51 @@ name: OpenSSF Scorecard
 # dependencies, token permissions, branch protection, signed releases, ...).
 # Results go to the Security tab and the public badge in the README.
 #
-# publish_results imposes rules on this file: no top-level env or defaults, no
-# workflow-level write permissions, and only approved actions in the job.
+# publish_results makes the Scorecard API verify this file before accepting
+# results, so it follows the official template's shape exactly: read-all at the
+# top, ubuntu-latest, no concurrency, timeouts, env or defaults, and only the
+# approved actions in the job. Don't "harden" it beyond that; the first stricter
+# version was rejected.
 on:
-  push:
-    branches: [main]
+  branch_protection_rule:
   schedule:
     - cron: '41 5 * * 1'
-  branch_protection_rule:
-  workflow_dispatch:
+  push:
+    branches: [main]
 
-# Nothing at the workflow level; the one job asks for what it needs.
-permissions: {}
-
-concurrency:
-  group: scorecard-${{ github.ref }}
-  cancel-in-progress: true
+permissions: read-all
 
 jobs:
   analysis:
     name: Scorecard analysis
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    runs-on: ubuntu-latest
+    if: github.event.repository.default_branch == github.ref_name || github.event_name == 'pull_request'
 
     permissions:
       security-events: write # upload results to the Security tab
       id-token: write # publish results for the badge
-      contents: read # read the repository
-      actions: read # read workflow runs for the CI checks
 
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Checkout code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
 
-      - uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
+      - name: Run analysis
+        uses: ossf/scorecard-action@fa7117db83c52d787ae5a89f350999701505d78e # v2.5.0
         with:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+      - name: Upload artifact
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
-          name: scorecard-results
+          name: SARIF file
           path: results.sarif
           retention-days: 5
 
-      - uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
+      - name: Upload to code-scanning
+        uses: github/codeql-action/upload-sarif@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4.39.1
         with:
           sarif_file: results.sarif

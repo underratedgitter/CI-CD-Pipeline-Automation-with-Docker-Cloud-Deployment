@@ -9,6 +9,10 @@ services:
     dockerfilePath: Dockerfile
     plan: free
     healthCheckPath: /health
+    # Deployed only by the pipeline (deploy hook), after every check passes.
+    # Auto-deploy built each push before CI ran, which put an image the
+    # vulnerability gate had blocked into production.
+    autoDeployTrigger: "off"
     envVars:
       - key: PORT
         value: "3000"
@@ -19,6 +23,9 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile.prometheus
     plan: free
+    # No pipeline deploy step for this service: Render deploys it once the
+    # commit's CI checks have passed (the rules are unit-tested there).
+    autoDeployTrigger: checksPass
     healthCheckPath: /-/healthy
     envVars:
       - key: PROMETHEUS_STORAGE_PATH
@@ -30,6 +37,7 @@ services:
     runtime: docker
     dockerfilePath: Dockerfile.grafana
     plan: free
+    autoDeployTrigger: checksPass
     envVars:
       - key: PROMETHEUS_URL
         value: https://prometheus-monitoring-service.onrender.com
