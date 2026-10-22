@@ -1,0 +1,45 @@
+name: Bug report
+description: Something is broken or behaves differently from the docs.
+labels: [bug]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you saw, including any error output.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: The smallest set of steps or commands that shows it.
+      placeholder: |
+        1. docker build -t pipeline-app:local .
+        2. ...
+    validations:
+      required: true
+  - type: input
+    id: revision
+    attributes:
+      label: Revision
+      description: The `revision` from `/info`, or the commit you built from.
+  - type: dropdown
+    id: where
+    attributes:
+      label: Where
+      options:
+        - Pipeline (GitHub Actions)
+        - Docker image
+        - Kubernetes chart
+        - Monitoring (Prometheus / Grafana / alerts)
+        - App or portfolio
+        - Other
+    validations:
+      required: true

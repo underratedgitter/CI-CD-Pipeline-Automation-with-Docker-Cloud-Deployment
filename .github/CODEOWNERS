@@ -1,0 +1,8 @@
+# Review is requested from the owner on every pull request. With branch
+# protection's "require review from Code Owners", nothing merges without it.
+*                    @underratedgitter
+
+# Changes that alter what runs with the repository's token, or what ships.
+/.github/            @underratedgitter
+/Dockerfile          @underratedgitter
+/deploy/             @underratedgitter
