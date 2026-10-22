@@ -6,7 +6,10 @@ metadata:
     {{- include "pipeline-app.labels" . | nindent 4 }}
   annotations:
     helm.sh/hook: test
-    helm.sh/hook-delete-policy: hook-succeeded
+    # before-hook-creation, not hook-succeeded: a passing pod deleted at once
+    # makes `helm test --logs` fail fetching its logs. This keeps the pod until
+    # the next test run replaces it.
+    helm.sh/hook-delete-policy: before-hook-creation
 spec:
   restartPolicy: Never
   containers:

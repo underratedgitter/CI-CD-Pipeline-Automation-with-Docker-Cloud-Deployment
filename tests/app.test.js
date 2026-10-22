@@ -109,9 +109,23 @@ describe('Security headers', () => {
     const res = await request(app).get('/api/status');
     expect(res.headers['x-frame-options']).toBe('DENY');
     expect(res.headers['x-content-type-options']).toBe('nosniff');
-    expect(res.headers['x-xss-protection']).toBe('1; mode=block');
+    expect(res.headers['x-xss-protection']).toBe('0');
     expect(res.headers['referrer-policy']).toBe('strict-origin-when-cross-origin');
+    expect(res.headers['cross-origin-opener-policy']).toBe('same-origin');
+    expect(res.headers['cross-origin-resource-policy']).toBe('same-origin');
+    expect(res.headers['permissions-policy']).toContain('camera=()');
     expect(res.headers['x-powered-by']).toBeUndefined();
+  });
+
+  it('sends a strict Content-Security-Policy', async () => {
+    const res = await request(app).get('/api/status');
+    const csp = res.headers['content-security-policy'];
+    expect(csp).toContain("default-src 'self'");
+    expect(csp).toContain("script-src 'self'");
+    expect(csp).toContain("frame-ancestors 'none'");
+    expect(csp).toContain("object-src 'none'");
+    expect(csp).not.toContain('unsafe-inline');
+    expect(csp).not.toContain('unsafe-eval');
   });
 
   it('includes request ID header', async () => {
@@ -123,6 +137,28 @@ describe('Security headers', () => {
     const customId = 'test-request-123';
     const res = await request(app).get('/api/status').set('X-Request-Id', customId);
     expect(res.headers['x-request-id']).toBe(customId);
+  });
+
+  it.each([
+    ['too long', 'a'.repeat(129)],
+    ['containing spaces', 'id with spaces'],
+    ['containing markup', '<script>alert(1)</script>'],
+  ])('replaces a request ID %s with a generated one', async (_label, badId) => {
+    const res = await request(app).get('/api/status').set('X-Request-Id', badId);
+    expect(res.headers['x-request-id']).not.toBe(badId);
+    expect(res.headers['x-request-id']).toMatch(/^[0-9a-f-]{36}$/);
+  });
+});
+
+// ── Revision ─────────────────────────────────────────────────────────────────
+describe('Revision reporting', () => {
+  it('reports the revision in /info, /api/status and the info metric', async () => {
+    const info = await request(app).get('/info');
+    expect(info.body).toHaveProperty('revision');
+    const status = await request(app).get('/api/status');
+    expect(status.body.revision).toBe(info.body.revision);
+    const metrics = await request(app).get('/metrics');
+    expect(metrics.text).toMatch(/nodejs_app_info\{[^}]*revision="[^"]+"/);
   });
 });
 

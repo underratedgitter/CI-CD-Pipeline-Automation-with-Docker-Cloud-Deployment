@@ -58,7 +58,8 @@ case "$(header content-type)" in text/html*) ;; *) fail "/ content-type: $(heade
 grep -q '<div id="root">' "$body" || fail "/ is not the portfolio page"
 [ "$(header cache-control)" = no-cache ] || fail "/ cache-control: $(header cache-control)"
 [ "$(header x-frame-options)" = DENY ] || fail "/ is missing the security headers"
-pass "/ serves the portfolio, with security headers and no-cache"
+case "$(header content-security-policy)" in *"default-src 'self'"*) ;; *) fail "/ has no Content-Security-Policy" ;; esac
+pass "/ serves the portfolio, with security headers, a CSP and no-cache"
 
 asset=$(grep -o '/assets/[^"]*\.js' "$body" | head -n 1 || true)
 [ -n "$asset" ] || fail "index.html references no hashed JS asset"
@@ -87,7 +88,21 @@ pass "unknown paths return 404"
 
 uid=$(docker exec "$name" id -u)
 [ "$uid" != 0 ] || fail "container runs as root"
-pass "runs as a non-root user (uid $uid)"
+# Numeric, or Kubernetes' runAsNonRoot refuses to start the pod.
+user=$(docker inspect --format '{{.Config.User}}' "$name")
+[[ $user =~ ^[0-9]+(:[0-9]+)?$ ]] || fail "image USER is '$user'; it must be numeric for runAsNonRoot"
+pass "runs as a numeric non-root user (uid $uid, USER $user)"
+
+for tool in npm npx yarn corepack; do
+  if docker exec "$name" sh -c "command -v $tool" >/dev/null 2>&1; then
+    fail "$tool is in the runtime image"
+  fi
+done
+pass "no package managers in the runtime image"
+
+[ "$(docker exec "$name" sh -c 'test -w /app/app.js && echo writable || echo read-only')" = read-only ] \
+  || fail "the app user can modify its own code"
+pass "app code is read-only to the app user"
 
 [ -n "$(docker inspect --format '{{if .Config.Healthcheck}}yes{{end}}' "$name")" ] || fail "image has no HEALTHCHECK"
 pass "image declares a HEALTHCHECK"

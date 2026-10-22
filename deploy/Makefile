@@ -12,9 +12,9 @@ TAG      := dev
 # The project lives under kubernetes/, not kubernetes-sigs/ — the sigs path 404s.
 INGRESS_VERSION := controller-v1.15.1
 
-.PHONY: up down cluster ingress image install test lint template status logs
+.PHONY: up down cluster ingress image install test zero-downtime lint template status logs
 
-up: cluster ingress image install test status
+up: cluster ingress image install test zero-downtime status
 
 cluster:
 	kind get clusters | grep -qx $(CLUSTER) || kind create cluster --config kind/cluster.yaml
@@ -42,6 +42,11 @@ install:
 
 test:
 	helm test $(RELEASE) --namespace $(NAMESPACE) --logs
+
+# Replaces every pod while a client inside the cluster calls the Service, and
+# fails on a single dropped request.
+zero-downtime:
+	bash kind/zero-downtime-test.sh $(NAMESPACE) $(RELEASE)
 
 lint:
 	helm lint $(CHART) --strict

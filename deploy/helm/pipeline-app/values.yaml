@@ -75,10 +75,13 @@ podDisruptionBudget:
   minAvailable: 1
 
 # The container already runs as a non-root user from the Dockerfile; this
-# enforces it at admission time rather than trusting the image.
+# enforces it at admission time rather than trusting the image. The IDs match
+# the Dockerfile's numeric USER, and runAsNonRoot only works with a numeric one.
 podSecurityContext:
   runAsNonRoot: true
-  fsGroup: 1000
+  runAsUser: 10001
+  runAsGroup: 10001
+  fsGroup: 10001
   seccompProfile:
     type: RuntimeDefault
 

@@ -11,6 +11,10 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const NODE_ENV = process.env.NODE_ENV || 'development';
 const VERSION = pkg.version;
+// The commit being served. Render sets RENDER_GIT_COMMIT on every deploy; the
+// Dockerfile bakes REVISION in for every other platform. The deploy job polls
+// /info until this matches the commit it pushed.
+const REVISION = process.env.RENDER_GIT_COMMIT || process.env.REVISION || 'unknown';
 // The portfolio's Vite build. The Dockerfile builds it into this path; locally,
 // run `npm run build` inside portfolio/ first.
 const PORTFOLIO_DIR = process.env.PORTFOLIO_DIR || path.join(__dirname, 'portfolio', 'dist');
@@ -20,18 +24,48 @@ const PORTFOLIO_DIR = process.env.PORTFOLIO_DIR || path.join(__dirname, 'portfol
 let shuttingDown = false;
 
 // ── Request ID ───────────────────────────────────────────────────────────────
+// A caller's ID is kept so a request can be traced across services, but only
+// in a short, plain form: it is echoed in headers and written to logs, where
+// arbitrary input would be a log-forging and header-size problem.
+const REQUEST_ID_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
+
 app.use((req, res, next) => {
-  req.id = req.headers['x-request-id'] || crypto.randomUUID();
+  const incoming = req.headers['x-request-id'];
+  req.id = typeof incoming === 'string' && REQUEST_ID_PATTERN.test(incoming) ? incoming : crypto.randomUUID();
   res.setHeader('X-Request-Id', req.id);
   next();
 });
 
 // ── Security Headers ─────────────────────────────────────────────────────────
+// The portfolio loads nothing from other origins and has no inline script or
+// style, so the policy needs no 'unsafe-inline' and no allow-listed hosts.
+// tests/smoke.sh and a real browser check that the page renders under it.
+const CONTENT_SECURITY_POLICY = [
+  "default-src 'self'",
+  "script-src 'self'",
+  "style-src 'self'",
+  "img-src 'self' data:",
+  "font-src 'self'",
+  "connect-src 'self'",
+  "object-src 'none'",
+  "base-uri 'none'",
+  "form-action 'self'",
+  "frame-ancestors 'none'",
+].join('; ');
+
 app.use((_req, res, next) => {
+  res.setHeader('Content-Security-Policy', CONTENT_SECURITY_POLICY);
+  // Legacy twin of frame-ancestors, for browsers that predate CSP level 2.
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('X-Content-Type-Options', 'nosniff');
-  res.setHeader('X-XSS-Protection', '1; mode=block');
+  // "0", not "1; mode=block": the XSS auditor this controlled is gone from
+  // every current browser, and in the ones that had it, it could be abused to
+  // leak data. OWASP recommends switching it off and relying on the CSP.
+  res.setHeader('X-XSS-Protection', '0');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Cross-Origin-Opener-Policy', 'same-origin');
+  res.setHeader('Cross-Origin-Resource-Policy', 'same-origin');
+  res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=(), payment=(), usb=()');
   res.setHeader('X-Request-Id', _req.id);
   if (NODE_ENV === 'production') {
     res.setHeader('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
@@ -119,10 +153,10 @@ const httpErrorsTotal = new client.Counter({
 const appInfo = new client.Gauge({
   name: 'nodejs_app_info',
   help: 'Node.js application information',
-  labelNames: ['version', 'node_version', 'environment'],
+  labelNames: ['version', 'revision', 'node_version', 'environment'],
   registers: [register],
 });
-appInfo.labels(VERSION, process.version, NODE_ENV).set(1);
+appInfo.labels(VERSION, REVISION, process.version, NODE_ENV).set(1);
 
 // ── Metrics Middleware ───────────────────────────────────────────────────────
 app.use(express.json({ limit: '10kb' }));
@@ -177,7 +211,7 @@ app.use(rateLimit);
 // ── Routes ───────────────────────────────────────────────────────────────────
 
 app.get('/api/status', (_req, res) => {
-  res.json({ status: 'ok', message: 'hello Sir', version: VERSION, environment: NODE_ENV });
+  res.json({ status: 'ok', message: 'hello Sir', version: VERSION, revision: REVISION, environment: NODE_ENV });
 });
 
 app.get('/health', (_req, res) => {
@@ -221,6 +255,7 @@ app.get('/info', (_req, res) => {
   res.json({
     name: 'CI/CD Pipeline Automation',
     version: VERSION,
+    revision: REVISION,
     nodeVersion: process.version,
     environment: NODE_ENV,
     uptime: process.uptime(),

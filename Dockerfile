@@ -23,25 +23,35 @@ RUN npm run build
 # ── Stage 3: final image ───────────────────────────────────────────────────────
 FROM node:24-alpine
 
+ENV NODE_ENV=production
+
 WORKDIR /app
 
-# Create a non-root user
-RUN addgroup -S appgroup && adduser -S appuser -G appgroup
+# A numeric user, so Kubernetes can enforce runAsNonRoot: the kubelet cannot
+# read a name like "appuser" out of the image and refuses to start the pod.
+# Above 10000 so it never matches a real account on the host.
+#
+# npm, npx, corepack and yarn are package managers. Nothing at runtime calls
+# them, and they bring their own dependency trees, and those trees' CVEs.
+RUN addgroup -S -g 10001 app \
+ && adduser -S -D -H -u 10001 -G app app \
+ && rm -rf /usr/local/lib/node_modules/npm /usr/local/lib/node_modules/corepack /opt/yarn-* \
+           /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/corepack \
+           /usr/local/bin/yarn /usr/local/bin/yarnpkg
 
-# Copy production deps from stage 1
+# Owned by root and only readable by the app user, so a compromised process
+# cannot rewrite its own code.
 COPY --from=deps /app/node_modules ./node_modules
-
-# Copy application source
-COPY app.js ./
-COPY package.json ./
-
+COPY app.js package.json ./
 # Only the built site; the portfolio's toolchain stays in its build stage
 COPY --from=portfolio /portfolio/dist ./portfolio/dist
 
-# Own files as non-root user
-RUN chown -R appuser:appgroup /app
+# The commit this image was built from, reported at /info. Late in the file
+# because it changes on every build and would invalidate every layer after it.
+ARG REVISION=unknown
+ENV REVISION=${REVISION}
 
-USER appuser
+USER 10001:10001
 
 EXPOSE 3000
 
