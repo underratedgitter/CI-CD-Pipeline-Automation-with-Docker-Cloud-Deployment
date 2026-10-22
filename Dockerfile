@@ -1,5 +1,5 @@
 # ── Stage 1: install production deps ──────────────────────────────────────────
-FROM node:24-alpine AS deps
+FROM node:25-alpine AS deps
 
 WORKDIR /app
 
@@ -11,7 +11,7 @@ COPY package.json package-lock.json* ./
 RUN npm ci --omit=dev --ignore-scripts
 
 # ── Stage 2: build the portfolio (static site) ─────────────────────────────────
-FROM node:24-alpine AS portfolio
+FROM node:25-alpine AS portfolio
 
 WORKDIR /portfolio
 
@@ -22,7 +22,7 @@ COPY portfolio/ ./
 RUN npm run build
 
 # ── Stage 3: final image ───────────────────────────────────────────────────────
-FROM node:24-alpine
+FROM node:25-alpine
 
 ENV NODE_ENV=production
 
