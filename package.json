@@ -18,7 +18,7 @@
     "traffic": "node traffic-gen.js"
   },
   "dependencies": {
-    "express": "^4.18.2",
+    "express": "^5.2.1",
     "prom-client": "^15.1.3"
   },
   "devDependencies": {
