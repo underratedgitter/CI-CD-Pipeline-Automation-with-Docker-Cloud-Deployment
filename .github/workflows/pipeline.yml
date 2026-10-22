@@ -1,23 +1,31 @@
 name: CI/CD Pipeline
 
+# Pull requests and manual runs check everything, including building and
+# smoke-testing the image. Only a push to main publishes and deploys.
 on:
   push:
     branches: [main]
   pull_request:
     branches: [main]
+  workflow_dispatch:
 
 env:
   REGISTRY: ghcr.io
   IMAGE_NAME: ${{ github.repository_owner }}/ci-cd-pipeline-app
 
-# One deploy at a time. Two overlapping helm upgrades on the same release leave
-# it stuck in pending-upgrade and need a manual rollback to clear.
+# One run per branch at a time. On main a newer push waits: two overlapping helm
+# upgrades on the same release leave it stuck in pending-upgrade and need a
+# manual rollback to clear. On a pull request a newer push replaces the check.
 concurrency:
   group: pipeline-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
+
+# Actions are pinned to full commit SHAs, with the release as a comment. A tag
+# is a pointer the action's owner (or whoever compromises them) can move; a SHA
+# is the exact code that was reviewed.
 
 jobs:
   # ── 0. Which optional targets are configured ─────────────────────────────────
@@ -26,7 +34,8 @@ jobs:
   # or a fresh clone fails the pipeline on credentials it was never given.
   guard:
     name: Check configured targets
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
 
     outputs:
       dockerhub: ${{ steps.check.outputs.dockerhub }}
@@ -45,12 +54,15 @@ jobs:
   # ── 1. Lint & Test ───────────────────────────────────────────────────────────
   test:
     name: Lint & Test
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -66,12 +78,15 @@ jobs:
   # ── 2. Security audit ────────────────────────────────────────────────────────
   security:
     name: Security Audit
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -89,20 +104,23 @@ jobs:
         continue-on-error: true
 
   # ── 2b. Portfolio ────────────────────────────────────────────────────────────
-  # The image build compiles the portfolio too, but that job only runs on push.
-  # Building it here means a type error or lint failure stops a pull request.
+  # Lints and type-checks the portfolio on its own, so a failure names the
+  # portfolio rather than surfacing as a failed Docker build.
   portfolio:
     name: Lint & Build Portfolio
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     defaults:
       run:
         working-directory: portfolio
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: actions/setup-node@v7
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
         with:
           node-version: '24'
           cache: 'npm'
@@ -122,12 +140,15 @@ jobs:
   # against production.
   chart:
     name: Lint & Validate Chart
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
 
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
 
-      - uses: azure/setup-helm@v5
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.16.2
 
@@ -162,7 +183,7 @@ jobs:
             -kubernetes-version 1.29.0 rendered.yaml
 
       - name: Scan the rendered manifests for misconfiguration
-        uses: aquasecurity/trivy-action@v0.36.0
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:
           scan-type: config
           scan-ref: rendered.yaml
@@ -170,11 +191,82 @@ jobs:
           exit-code: '0'
           severity: HIGH,CRITICAL
 
-  # ── 4. Build, scan and push ──────────────────────────────────────────────────
-  build-and-push:
-    name: Build & Push Image
-    runs-on: ubuntu-latest
-    needs: [guard, test, security, portfolio, chart]
+  # ── 4. Build, smoke-test and scan the image ──────────────────────────────────
+  # Runs on pull requests too, so an image that builds but does not start is
+  # caught before merge. On main the tested image is saved, and publish pushes
+  # exactly that image rather than a rebuild.
+  image:
+    name: Build & Test Image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    needs: [test, security, portfolio, chart]
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      # Only the OCI labels (source, revision, created); tags are set at publish.
+      - name: Derive labels
+        id: meta
+        uses: docker/metadata-action@dc802804100637a589fabce1cb79ff13a1411302 # v6.2.0
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+
+      - name: Build
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          load: true
+          push: false
+          tags: pipeline-app:ci
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          provenance: false
+
+      - name: Smoke test the container
+        run: bash tests/smoke.sh pipeline-app:ci
+
+      - name: Report HIGH and CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: pipeline-app:ci
+          format: table
+          exit-code: '0'
+          severity: CRITICAL,HIGH
+          ignore-unfixed: true
+
+      # Blocks only on what can be fixed: a CRITICAL with no released fix would
+      # fail every run without anything to act on.
+      - name: Block on fixable CRITICAL vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: pipeline-app:ci
+          format: table
+          exit-code: '1'
+          severity: CRITICAL
+          ignore-unfixed: true
+
+      - name: Keep the tested image for publishing
+        if: github.event_name == 'push'
+        run: docker save pipeline-app:ci | gzip > image.tar.gz
+
+      - if: github.event_name == 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: image.tar.gz
+          retention-days: 1
+
+  # ── 5. Publish ───────────────────────────────────────────────────────────────
+  publish:
+    name: Publish Image
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: [guard, image]
     if: github.event_name == 'push'
 
     permissions:
@@ -182,18 +274,21 @@ jobs:
       packages: write
 
     outputs:
-      digest: ${{ steps.build.outputs.digest }}
-      tag: ${{ steps.meta.outputs.version }}
+      digest: ${{ steps.push.outputs.digest }}
 
     steps:
-      - uses: actions/checkout@v7
+      # Exactly the image that passed the smoke test and the scan, not a rebuild.
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: image
 
-      - uses: docker/setup-buildx-action@v4
+      - name: Load the tested image
+        run: gunzip -c image.tar.gz | docker load
 
       # GHCR authenticates with the token the workflow already has, so pushing
       # needs no stored registry password at all.
       - name: Log in to GHCR
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
@@ -201,78 +296,78 @@ jobs:
 
       - name: Log in to Docker Hub
         if: needs.guard.outputs.dockerhub == 'true'
-        uses: docker/login-action@v4
+        uses: docker/login-action@dbcb813823bdd20940b903addbd779551569679f # v4.6.0
         with:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_PASSWORD }}
 
-      - name: Derive tags
-        id: meta
-        uses: docker/metadata-action@v6
-        with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-          tags: |
-            type=sha,format=long
-            type=raw,value=latest,enable={{is_default_branch}}
+      - name: Push, tagged with the commit and latest
+        id: push
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+        run: |
+          set -euo pipefail
+          image=$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')   # registry paths must be lowercase
+          for tag in "sha-$GITHUB_SHA" latest; do
+            docker tag pipeline-app:ci "$image:$tag"
+            docker push --quiet "$image:$tag"
+          done
+          ref=$(docker inspect --format '{{range .RepoDigests}}{{println .}}{{end}}' pipeline-app:ci \
+            | grep "^$image@sha256:" | head -n 1 || true)
+          digest=${ref#*@}
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::no digest for $image after push"; exit 1; }
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+          echo "Published \`$image@$digest\`" >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Build and push
-        id: build
-        uses: docker/build-push-action@v7
-        with:
-          context: .
-          push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-          provenance: false
-
-      # By digest, not by tag. `latest` can move between the push and the scan;
-      # the digest is the thing that will actually be deployed.
-      - name: Scan the image
-        uses: aquasecurity/trivy-action@v0.36.0
-        with:
-          image-ref: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}@${{ steps.build.outputs.digest }}
-          format: table
-          exit-code: '0'
-          severity: CRITICAL,HIGH
-          ignore-unfixed: true
-
-  # ── 5. Deploy to Kubernetes ──────────────────────────────────────────────────
+  # ── 6. Deploy to Kubernetes ──────────────────────────────────────────────────
   deploy-k8s:
     name: Deploy to Kubernetes
-    runs-on: ubuntu-latest
-    needs: [guard, build-and-push]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    needs: [guard, publish]
     if: github.event_name == 'push' && needs.guard.outputs.kubernetes == 'true'
 
     environment:
       name: production
       url: ${{ vars.APP_URL }}
 
-    steps:
-      - uses: actions/checkout@v7
+    env:
+      NAMESPACE: ${{ vars.K8S_NAMESPACE || 'pipeline' }}
 
-      - uses: azure/setup-helm@v5
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
         with:
           version: v3.16.2
 
+      # Through env, not ${{ }} in the script: an expression is pasted into the
+      # shell source before it runs, so a secret would become code.
       - name: Configure cluster access
+        env:
+          KUBE_CONFIG: ${{ secrets.KUBE_CONFIG }}
         run: |
-          mkdir -p "$HOME/.kube"
-          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > "$HOME/.kube/config"
+          install -m 700 -d "$HOME/.kube"
+          printf '%s' "$KUBE_CONFIG" | base64 -d > "$HOME/.kube/config"
           chmod 600 "$HOME/.kube/config"
 
       # Deployed by digest. A tag is a pointer someone can move; a digest is the
-      # image that was tested two jobs ago and nothing else.
+      # image that was smoke-tested and scanned two jobs ago and nothing else.
       - name: Deploy
+        env:
+          IMAGE: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          DIGEST: ${{ needs.publish.outputs.digest }}
         run: |
           set -euo pipefail
+          image=$(printf '%s' "$IMAGE" | tr '[:upper:]' '[:lower:]')
           helm upgrade --install pipeline-app deploy/helm/pipeline-app \
-            --namespace "${{ vars.K8S_NAMESPACE || 'pipeline' }}" \
+            --namespace "$NAMESPACE" \
             --create-namespace \
             --values deploy/helm/pipeline-app/values-prod.yaml \
-            --set image.repository=${{ env.REGISTRY }}/${{ env.IMAGE_NAME }} \
-            --set image.digest=${{ needs.build-and-push.outputs.digest }} \
+            --set image.repository="$image" \
+            --set image.digest="$DIGEST" \
             --atomic \
             --timeout 5m
         # --atomic rolls back to the previous release if the new pods never go
@@ -280,54 +375,60 @@ jobs:
         # of a half-migrated one.
 
       - name: Verify with the chart's own tests
-        run: |
-          helm test pipeline-app \
-            --namespace "${{ vars.K8S_NAMESPACE || 'pipeline' }}" \
-            --logs
+        run: helm test pipeline-app --namespace "$NAMESPACE" --logs
 
       - name: Report what is running
         if: always()
-        run: |
-          kubectl -n "${{ vars.K8S_NAMESPACE || 'pipeline' }}" \
-            get deploy,pod,hpa -o wide || true
+        run: kubectl -n "$NAMESPACE" get deploy,pod,hpa -o wide || true
 
-  # ── 6. Deploy to Render ──────────────────────────────────────────────────────
+      - name: Remove cluster credentials
+        if: always()
+        run: rm -f "$HOME/.kube/config"
+
+  # ── 7. Deploy to Render ──────────────────────────────────────────────────────
   # Kept because it is what the public demo runs on. The Kubernetes path above is
-  # the one that reflects how this would actually be operated.
+  # the one that reflects how this would actually be operated. Render builds its
+  # own image from the Dockerfile, so it waits for publish only so that nothing
+  # deploys unless the tested image passed.
   deploy-render:
     name: Deploy to Render
-    runs-on: ubuntu-latest
-    needs: [guard, build-and-push]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    needs: [guard, publish]
     if: github.event_name == 'push' && needs.guard.outputs.render == 'true'
 
     steps:
       - name: Trigger Render deploy
+        env:
+          HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
           set -euo pipefail
-          code=$(curl -s -o /dev/null -w "%{http_code}" "${{ secrets.RENDER_DEPLOY_HOOK_URL }}")
+          code=$(curl --silent --output /dev/null --max-time 30 --write-out '%{http_code}' "$HOOK_URL") || code=000
           # Render answers 200 when it starts a deploy and 202 when it queues one
           # (for example behind the auto-deploy a push already started). Both
           # mean the deploy was accepted; anything outside 2xx is a real failure.
           case "$code" in
             2??) echo "Render deploy triggered (HTTP $code)" ;;
-            *)   echo "Render hook returned $code"; exit 1 ;;
+            *)   echo "::error::Render hook returned HTTP $code"; exit 1 ;;
           esac
 
-      - name: Wait for the new version to answer
+      - name: Wait for the service to answer
+        env:
+          URL: ${{ vars.RENDER_URL || 'https://ci-cd-pipeline-automation-app.onrender.com' }}/health
         run: |
           set -euo pipefail
-          url="${{ vars.RENDER_URL || 'https://ci-cd-pipeline-automation-app.onrender.com' }}/health"
           # Poll rather than sleep for a fixed interval. A free-tier cold start is
           # not a fixed length, so a single `sleep 30` either wastes time or
-          # reports a failure that has not happened.
+          # reports a failure that has not happened. curl prints 000 itself on a
+          # network error; `|| code=000` only keeps set -e from ending the loop.
           for i in $(seq 1 20); do
-            code=$(curl -s -o /dev/null -w "%{http_code}" "$url" || echo 000)
+            code=$(curl --silent --output /dev/null --max-time 30 --write-out '%{http_code}' "$URL") || code=000
             if [ "$code" = "200" ]; then
-              echo "Healthy after $((i * 15))s"
+              echo "Healthy after attempt $i"
               exit 0
             fi
-            echo "attempt $i: $code"
+            echo "attempt $i: HTTP $code"
             sleep 15
           done
-          echo "Never returned 200 within five minutes"
+          echo "::error::$URL never returned 200 within five minutes"
           exit 1

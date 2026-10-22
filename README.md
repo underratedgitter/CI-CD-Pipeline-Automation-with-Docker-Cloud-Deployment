@@ -8,7 +8,7 @@ Code push to a running cloud deployment in under five minutes.
 
 ## The pipeline
 
-`.github/workflows/pipeline.yml`. The first three jobs gate the rest.
+`.github/workflows/pipeline.yml`. The first four jobs gate the rest.
 
 | Job | Does | Blocks on failure |
 |---|---|---|
@@ -16,12 +16,14 @@ Code push to a running cloud deployment in under five minutes.
 | **Security Audit** | `npm audit` against the dependency tree | yes |
 | **Lint & Build Portfolio** | `oxlint`, then `tsc -b && vite build` on `portfolio/` | yes |
 | **Lint & Validate Chart** | `helm lint` on both value sets, then renders the chart and checks it against the real Kubernetes API schemas with `kubeconform`, then a Trivy config scan | yes |
-| **Build & Push** | Buildx build, push to GHCR, **Trivy** scans the pushed image *by digest* | push events only |
-| **Deploy to Kubernetes** | `helm upgrade --install --atomic` at the built digest, then `helm test` | push events, if a cluster is configured |
-| **Deploy to Render** | Deploy hook, then polls `/health` until it answers | push events, if the hook is configured |
+| **Build & Test Image** | Buildx build, then `tests/smoke.sh` starts the container and checks it from outside (portfolio, API, metrics, non-root user, clean shutdown on SIGTERM), then **Trivy** fails the run on any fixable CRITICAL | yes |
+| **Publish Image** | Pushes the exact image that passed, not a rebuild, to GHCR as `sha-<commit>` and `latest` | push events only |
+| **Deploy to Kubernetes** | `helm upgrade --install --atomic` at the published digest, then `helm test` | push events, if a cluster is configured |
+| **Deploy to Render** | Deploy hook (Render builds its own image from the Dockerfile), then polls `/health` until it answers | push events, if the hook is configured |
 
-Pull requests run the gates and stop — nothing unreviewed reaches a registry or a
-deployment.
+Pull requests and manual runs go as far as building and testing the image — nothing
+unreviewed reaches a registry or a deployment. On a pull request a newer push
+cancels the running check; on `main` runs queue, so two deploys never overlap.
 
 Nothing has to be configured for the pipeline to pass. GHCR authenticates with
 the token the workflow already holds, so there is no registry secret at all; the
@@ -30,22 +32,26 @@ when a fork or a fresh clone does not have them.
 
 | Configured with | Enables |
 |---|---|
-| *(nothing)* | gates, build, push to GHCR, image scan |
+| *(nothing)* | gates, image build, smoke test and scan, push to GHCR |
 | `KUBE_CONFIG` (base64 kubeconfig) | the Kubernetes deploy |
 | `RENDER_DEPLOY_HOOK_URL` | the Render deploy |
 | `DOCKER_USERNAME` / `DOCKER_PASSWORD` | an additional Docker Hub push |
 
 A few details that are deliberate rather than incidental:
 
-- **The image is scanned and deployed by digest, not by tag.** A tag is a pointer
-  that can move between the scan and the deploy. The digest is the artefact that
-  was actually tested.
+- **The image that ships is the image that was tested.** The build job saves the
+  image after the smoke test and scan pass; publish pushes that saved image rather
+  than rebuilding, and Kubernetes deploys it by digest. A tag is a pointer that
+  can move between the test and the deploy; the digest cannot.
 - **`--atomic` on the upgrade.** If the new pods never pass readiness, Helm rolls
   back and the previous version keeps serving, rather than leaving the release
   half-applied.
-- **Actions are pinned to releases.** `aquasecurity/trivy-action@v0.36.0`, not
-  `@master` — a floating reference runs whatever is upstream at the moment the
-  job starts, which is somebody else's `main` branch with write access to the run.
+- **Actions are pinned to commit SHAs**, with the release in a comment. Even a
+  release tag is a pointer its owner, or whoever compromises them, can move to
+  new code; a SHA is the exact code that was reviewed.
+- **Least exposure for credentials.** Checkouts don't leave the Git token on disk
+  (`persist-credentials: false`), secrets reach scripts through `env` rather than
+  being pasted into the script source, and every job has a time limit.
 
 ### Keeping the free tier awake
 
@@ -139,6 +145,7 @@ npm install
 npm run dev          # node --watch
 npm test             # jest, with coverage
 npm run lint
+docker build -t pipeline-app:local . && bash tests/smoke.sh pipeline-app:local
 ```
 
 `npm run dev` serves the portfolio only if it has been built. Build it with
@@ -260,5 +267,5 @@ deploy/
 .github/workflows/pipeline.yml
 .github/workflows/uptime-check.yml   hourly backup check of the live app
 render.yaml                   deploy target
-tests/                        jest + supertest suites
+tests/                        jest + supertest suites; smoke.sh for the built image
 ```
