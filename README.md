@@ -47,10 +47,22 @@ A few details that are deliberate rather than incidental:
   `@master` — a floating reference runs whatever is upstream at the moment the
   job starts, which is somebody else's `main` branch with write access to the run.
 
-A second workflow, `.github/workflows/keep-alive.yml`, pings `/health` every five
-minutes so the Render free-tier app never sleeps and visitors skip the cold start.
-It keeps only the app awake: the free plan's 750 instance-hours a month cover one
+### Keeping the free tier awake
+
+Render sleeps a free web service after 15 minutes without inbound traffic, and
+the next visitor waits through a cold start of ten seconds or more. A free
+[cron-job.org](https://cron-job.org) job requests
+`https://ci-cd-pipeline-automation-app.onrender.com/health` every five minutes,
+which keeps the app awake. It is configured on cron-job.org, not in this repo.
+
+It is external on purpose. Render cron jobs have no free plan, and a GitHub
+Actions schedule is best effort: a `*/5` schedule fired every 2 to 10 hours
+(median 4.5) over 24 days, never inside the 15-minute window. Only the app is
+kept awake, because the free plan's 750 instance-hours a month cover one
 always-on service, not three.
+
+`.github/workflows/uptime-check.yml` is a backup: an hourly check that `/health`
+answers, where a failed run is the alert.
 
 ---
 
@@ -246,6 +258,7 @@ deploy/
   kind/cluster.yaml           3-node local cluster
   Makefile                    up / test / lint / template / down
 .github/workflows/pipeline.yml
+.github/workflows/uptime-check.yml   hourly backup check of the live app
 render.yaml                   deploy target
 tests/                        jest + supertest suites
 ```

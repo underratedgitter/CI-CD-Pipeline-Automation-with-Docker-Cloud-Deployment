@@ -1,5 +1,8 @@
 services:
   # ── 1. Node.js Application ──────────────────────────────────────────────────
+  # Kept awake by an external cron-job.org job hitting /health every 5 minutes.
+  # Render cron jobs have no free plan, and the free tier's 750 instance-hours a
+  # month cover one always-on service, so Prometheus and Grafana are left to sleep.
   - type: web
     name: ci-cd-pipeline-automation-app
     runtime: docker
@@ -40,14 +43,3 @@ services:
         value: "false"
       - key: GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH
         value: /var/lib/grafana/dashboards/nodejs-overview.json
-
-  # ── 4. Keep-Alive Cron ──────────────────────────────────────────────────────
-  # Pings all 3 services every 10 min so they NEVER sleep on Render free tier.
-  # This is what keeps Prometheus alive — without it, free services sleep after
-  # 15 min of inactivity and Prometheus crashes on wake-up (storage issue).
-  - type: cron
-    name: keep-alive-pinger
-    runtime: docker
-    dockerfilePath: Dockerfile.keepalive
-    schedule: "*/10 * * * *"
-    plan: free

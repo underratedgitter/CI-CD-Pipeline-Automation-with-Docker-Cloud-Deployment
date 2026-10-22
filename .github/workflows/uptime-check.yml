@@ -1,0 +1,57 @@
+name: Uptime check
+
+# A backup check that the deployed app answers, with a failed run as the alert.
+#
+# This does not keep the Render free-tier app awake. Render sleeps a service
+# after 15 minutes without inbound traffic, and GitHub runs schedules best
+# effort: a `*/5` schedule here fired every 2 to 10 hours (median 4.5) over
+# 24 days, so no gap was short enough. The keep-alive is an external
+# cron-job.org job that requests /health every 5 minutes (see README).
+#
+# Hourly, at :17 rather than :00, because GitHub's scheduler is busiest at the
+# top of the hour and drops more runs there.
+on:
+  schedule:
+    - cron: '17 * * * *'
+  workflow_dispatch:
+
+permissions: {}
+
+# A delayed run that lands on top of the next one adds nothing; keep the newest.
+concurrency:
+  group: uptime-check
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Check /health
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Request /health
+        env:
+          URL: ${{ vars.RENDER_URL || 'https://ci-cd-pipeline-automation-app.onrender.com' }}/health
+        run: |
+          set -euo pipefail
+          # Retried because a wake from sleep can outlast a single request.
+          # curl prints 000 itself when it cannot connect, so `|| true` only
+          # stops set -e from ending the loop on a network error.
+          for attempt in 1 2 3; do
+            result=$(curl --silent --output /dev/null --max-time 60 \
+              --write-out '%{http_code} %{time_total}' "$URL") || true
+            code=${result%% *}
+            seconds=${result#* }
+            code=${code:-000}
+            seconds=${seconds:-0}
+            if [ "$code" = "200" ]; then
+              echo "Healthy: HTTP 200 in ${seconds}s (attempt $attempt)"
+              echo "Healthy: \`$URL\` returned 200 in ${seconds}s (attempt $attempt)." >> "$GITHUB_STEP_SUMMARY"
+              exit 0
+            fi
+            echo "Attempt $attempt: HTTP $code after ${seconds}s"
+            [ "$attempt" -lt 3 ] && sleep 10
+          done
+          echo "::error::$URL did not return 200 after 3 attempts (last: HTTP $code)"
+          echo "Down: \`$URL\` did not return 200 after 3 attempts (last: HTTP $code)." >> "$GITHUB_STEP_SUMMARY"
+          exit 1
