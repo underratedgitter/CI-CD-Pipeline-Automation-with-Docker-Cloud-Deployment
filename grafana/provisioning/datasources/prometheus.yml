@@ -4,7 +4,10 @@ datasources:
   - name: Prometheus
     type: prometheus
     access: proxy
-    url: ${PROMETHEUS_URL:http://prometheus:9090}
+    # Plain ${VAR}: Grafana's provisioning does not support a ${VAR:default}
+    # fallback. That form produced an empty URL, so every panel errored with
+    # `parse "": empty url`. The default lives in Dockerfile.grafana instead;
+    # Render and docker-compose set PROMETHEUS_URL explicitly.
+    url: ${PROMETHEUS_URL}
     isDefault: true
     editable: true
-

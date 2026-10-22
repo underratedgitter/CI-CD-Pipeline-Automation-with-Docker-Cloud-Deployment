@@ -1,5 +1,9 @@
 FROM grafana/grafana:13.2.4
 
+# Where the provisioned datasource points unless the platform overrides it
+# (Render sets PROMETHEUS_URL to its Prometheus service).
+ENV PROMETHEUS_URL=http://prometheus:9090
+
 COPY grafana/provisioning /etc/grafana/provisioning
 COPY grafana/dashboards /var/lib/grafana/dashboards
 

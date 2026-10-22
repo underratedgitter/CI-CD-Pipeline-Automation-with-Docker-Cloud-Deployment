@@ -33,7 +33,7 @@ services:
 
   # ── Prometheus ────────────────────────────────────────────────────────────────
   prometheus:
-    image: prom/prometheus:v2.54.1
+    image: prom/prometheus:v3.15.0
     container_name: prometheus
     ports:
       - '9090:9090'
@@ -71,7 +71,7 @@ services:
 
   # ── Grafana ───────────────────────────────────────────────────────────────────
   grafana:
-    image: grafana/grafana:11.2.0
+    image: grafana/grafana:13.2.4
     container_name: grafana
     ports:
       - '3001:3000'
@@ -80,6 +80,7 @@ services:
       - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
       - grafana_data:/var/lib/grafana
     environment:
+      - PROMETHEUS_URL=http://prometheus:9090
       - GF_SECURITY_ADMIN_USER=admin
       - GF_SECURITY_ADMIN_PASSWORD=admin
       - GF_USERS_ALLOW_SIGN_UP=false
