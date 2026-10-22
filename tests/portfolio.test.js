@@ -41,7 +41,6 @@ describe('Portfolio static site', () => {
 
   it('does not count page loads against the rate limit', async () => {
     for (let i = 0; i < 5; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
       const res = await request(app).get('/robots.txt');
       expect(res.statusCode).toBe(200);
     }

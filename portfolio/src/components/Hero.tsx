@@ -9,6 +9,9 @@ import { Scramble } from "./Scramble";
 
 const EASE: Easing = [0.16, 1, 0.3, 1];
 
+// Read once at load, not during render: render stays pure.
+const YEAR = new Date().getFullYear();
+
 const INDEX = [
   { n: "01", label: "Selected work", href: "#work" },
   { n: "02", label: "Experience", href: "#experience" },
@@ -101,7 +104,7 @@ export function Hero() {
 
           <m.div {...fade(0.45)} className="label relative mt-6 flex items-center justify-between pb-4 pt-3 text-white/55 sm:mt-8">
             <Rule side="top" soft />
-            <span>Portfolio · {new Date().getFullYear()}</span>
+            <span>Portfolio · {YEAR}</span>
             <span className="hidden sm:inline">Pipelines · Telemetry · Reliability</span>
             <span>Scroll ↓</span>
           </m.div>

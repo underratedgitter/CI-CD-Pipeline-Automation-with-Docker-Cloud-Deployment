@@ -1,5 +1,8 @@
 import { profile } from "../data/content";
 
+// Read once at load, not during render: render stays pure.
+const YEAR = new Date().getFullYear();
+
 const LINKS = [
   { label: "GitHub", href: profile.github },
   { label: "LinkedIn", href: profile.linkedin },
@@ -24,7 +27,7 @@ export function Footer() {
             </a>
           ))}
         </div>
-        <p className="label text-white/50">© {new Date().getFullYear()} · Bharuch, India</p>
+        <p className="label text-white/50">© {YEAR} · Bharuch, India</p>
       </div>
     </footer>
   );

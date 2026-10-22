@@ -273,7 +273,6 @@ app.use((_req, res) => {
 });
 
 // ── Error Handler ────────────────────────────────────────────────────────────
-// eslint-disable-next-line no-unused-vars
 app.use((err, req, res, _next) => {
   console.error(`[ERROR] ${new Date().toISOString()} [${req.id}] ${req.method} ${req.path}:`, err.message);
   res.status(500).json({ error: 'Internal Server Error', requestId: req.id });

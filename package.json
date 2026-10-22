@@ -8,8 +8,8 @@
     "dev": "node --watch app.js",
     "test": "jest --forceExit --detectOpenHandles --coverage",
     "test:watch": "jest --watch",
-    "lint": "eslint . --ext .js",
-    "lint:fix": "eslint . --ext .js --fix",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
     "open": "open http://localhost:3000 http://localhost:9090 http://localhost:3001",
@@ -22,7 +22,9 @@
     "prom-client": "^15.1.3"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "eslint": "^10.12.0",
+    "globals": "^17.13.0",
     "jest": "^30.5.2",
     "prettier": "^3.9.10",
     "supertest": "^7.3.1"

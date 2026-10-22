@@ -19,7 +19,6 @@ describe('Rate limiting — over the limit', () => {
     const app = require('../app');
 
     for (let i = 0; i < 3; i += 1) {
-      // eslint-disable-next-line no-await-in-loop
       const res = await request(app).get('/api/status');
       expect(res.statusCode).toBe(200);
     }

@@ -2,7 +2,7 @@
 
 ## Setup
 
-Node 24, Docker, and for the Kubernetes parts `kind`, `kubectl` and `helm`.
+Node 26, Docker, and for the Kubernetes parts `kind`, `kubectl` and `helm`.
 
 ```bash
 npm ci --ignore-scripts
@@ -20,7 +20,7 @@ faster than waiting for it.
 | `app.js`, `tests/` | `npm run lint && npm test` |
 | `Dockerfile`, anything served | `docker build -t pipeline-app:local . && bash tests/smoke.sh pipeline-app:local` |
 | The portfolio, or response headers | start the image on :3999, then `bash tests/browser/csp-check.sh http://127.0.0.1:3999` |
-| `prometheus/` | `docker run --rm --entrypoint promtool -v "$PWD/prometheus:/p" -w /p prom/prometheus:v2.54.1 test rules tests/alert_rules_test.yml` |
+| `prometheus/` | `docker run --rm --entrypoint promtool -v "$PWD/prometheus:/p" -w /p prom/prometheus:v3.15.0 test rules tests/alert_rules_test.yml` |
 | `deploy/` | `make -C deploy up` (kind cluster, install, `helm test`, zero-downtime rollout) |
 | `.github/workflows/` | `docker run --rm -v "$PWD:/repo" -w /repo rhysd/actionlint:1.7.12` |
 

@@ -136,9 +136,9 @@ answers, where a failed run is the alert.
 Three stages, so build tooling never reaches the final layer:
 
 ```dockerfile
-FROM node:24-alpine AS deps       # npm ci --omit=dev --ignore-scripts
-FROM node:24-alpine AS portfolio  # npm ci --ignore-scripts && vite build
-FROM node:24-alpine               # node_modules, app.js, portfolio/dist
+FROM node:26-alpine AS deps       # npm ci --omit=dev --ignore-scripts
+FROM node:26-alpine AS portfolio  # npm ci --ignore-scripts && vite build
+FROM node:26-alpine               # node_modules, app.js, portfolio/dist
 ```
 
 - **A numeric non-root user, `10001:10001`.** Kubernetes can only enforce
