@@ -616,12 +616,20 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
 
+      # The hook must belong to the service at RENDER_URL: the wait below
+      # checks that URL, so a hook for any other service times out there.
+      # ref= deploys exactly the commit this run tested, not whatever is newest
+      # on main by the time Render picks it up.
       - name: Trigger Render deploy
         env:
           HOOK_URL: ${{ secrets.RENDER_DEPLOY_HOOK_URL }}
         run: |
           set -euo pipefail
-          code=$(curl --silent --output /dev/null --max-time 30 --write-out '%{http_code}' "$HOOK_URL") || code=000
+          case "$HOOK_URL" in
+            *\?*) deploy_url="$HOOK_URL&ref=$GITHUB_SHA" ;;
+            *)    deploy_url="$HOOK_URL?ref=$GITHUB_SHA" ;;
+          esac
+          code=$(curl --silent --output /dev/null --max-time 30 --write-out '%{http_code}' "$deploy_url") || code=000
           # Render answers 200 when it starts a deploy and 202 when it queues one
           # (for example behind the auto-deploy a push already started). Both
           # mean the deploy was accepted; anything outside 2xx is a real failure.
@@ -656,5 +664,5 @@ jobs:
             echo "attempt $i: serving ${revision:-nothing yet}"
             sleep 15
           done
-          echo "::error::$GITHUB_SHA was not live within ten minutes (last: ${revision:-no answer})"
+          echo "::error::$GITHUB_SHA was not live within ten minutes (last: ${revision:-no answer}). If Render did deploy, check that RENDER_DEPLOY_HOOK_URL is the hook of the service at $URL."
           exit 1
