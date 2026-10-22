@@ -1,16 +1,139 @@
+# Rules for the Prometheus that scrapes the deployed app (Render, or the local
+# Compose stack). The Kubernetes chart ships its own as a PrometheusRule.
+# Unit-tested in prometheus/tests/ with `promtool test rules`; CI runs them.
+#
+# Every ratio aggregates before it divides: sum(rate(errors)) / sum(rate(all)).
+# Dividing per series pairs each 5xx series with itself and reads 100% after a
+# single error. This file did exactly that until the tests caught it.
+#
+# ── Service level objectives ─────────────────────────────────────────────────
+#   Availability  99.5% of requests do not return 5xx    error budget 0.5%
+#   Latency       99%   of requests complete within 0.5s error budget 1%
+#
+# Alerting follows the multi-window, multi-burn-rate method from the Google
+# SRE Workbook (ch. 5): page when the budget burns fast enough to run out in
+# days, open a ticket when it burns steadily. Each alert pairs a long window
+# (is this significant?) with a short one (is it still happening?), so it
+# fires quickly and also resets quickly once the problem stops.
+#
+#   burn rate   long / short window   budget spent   severity
+#   14.4x       1h  / 5m              2%             critical (page)
+#   6x          6h  / 30m             5%             critical (page)
+#   3x          1d  / 2h              10%            warning  (ticket)
+
 groups:
+  # ── SLIs, recorded per window ──────────────────────────────────────────────
+  # Recorded once and reused by every alert and dashboard, rather than each one
+  # recomputing a rate over a day of samples. NaN when there is no traffic,
+  # which compares false, so an idle service never alerts on these.
+  - name: slo_sli_recordings
+    interval: 30s
+    rules:
+      - record: job:slo_errors_per_request:ratio_rate5m
+        expr: sum by (job) (rate(http_requests_total{status_code=~"5.."}[5m])) / sum by (job) (rate(http_requests_total[5m]))
+      - record: job:slo_errors_per_request:ratio_rate30m
+        expr: sum by (job) (rate(http_requests_total{status_code=~"5.."}[30m])) / sum by (job) (rate(http_requests_total[30m]))
+      - record: job:slo_errors_per_request:ratio_rate1h
+        expr: sum by (job) (rate(http_requests_total{status_code=~"5.."}[1h])) / sum by (job) (rate(http_requests_total[1h]))
+      - record: job:slo_errors_per_request:ratio_rate2h
+        expr: sum by (job) (rate(http_requests_total{status_code=~"5.."}[2h])) / sum by (job) (rate(http_requests_total[2h]))
+      - record: job:slo_errors_per_request:ratio_rate6h
+        expr: sum by (job) (rate(http_requests_total{status_code=~"5.."}[6h])) / sum by (job) (rate(http_requests_total[6h]))
+      - record: job:slo_errors_per_request:ratio_rate1d
+        expr: sum by (job) (rate(http_requests_total{status_code=~"5.."}[1d])) / sum by (job) (rate(http_requests_total[1d]))
+
+      # Slow means slower than the 0.5s bucket boundary.
+      - record: job:slo_slow_requests:ratio_rate5m
+        expr: 1 - sum by (job) (rate(http_request_duration_seconds_bucket{le="0.5"}[5m])) / sum by (job) (rate(http_request_duration_seconds_count[5m]))
+      - record: job:slo_slow_requests:ratio_rate30m
+        expr: 1 - sum by (job) (rate(http_request_duration_seconds_bucket{le="0.5"}[30m])) / sum by (job) (rate(http_request_duration_seconds_count[30m]))
+      - record: job:slo_slow_requests:ratio_rate1h
+        expr: 1 - sum by (job) (rate(http_request_duration_seconds_bucket{le="0.5"}[1h])) / sum by (job) (rate(http_request_duration_seconds_count[1h]))
+      - record: job:slo_slow_requests:ratio_rate2h
+        expr: 1 - sum by (job) (rate(http_request_duration_seconds_bucket{le="0.5"}[2h])) / sum by (job) (rate(http_request_duration_seconds_count[2h]))
+      - record: job:slo_slow_requests:ratio_rate6h
+        expr: 1 - sum by (job) (rate(http_request_duration_seconds_bucket{le="0.5"}[6h])) / sum by (job) (rate(http_request_duration_seconds_count[6h]))
+      - record: job:slo_slow_requests:ratio_rate1d
+        expr: 1 - sum by (job) (rate(http_request_duration_seconds_bucket{le="0.5"}[1d])) / sum by (job) (rate(http_request_duration_seconds_count[1d]))
+
+  # ── SLO burn-rate alerts ───────────────────────────────────────────────────
+  - name: slo_burn_rate_alerts
+    rules:
+      - alert: AvailabilitySLOFastBurn
+        expr: |
+          (
+              job:slo_errors_per_request:ratio_rate1h > (14.4 * 0.005)
+            and
+              job:slo_errors_per_request:ratio_rate5m > (14.4 * 0.005)
+          )
+          or
+          (
+              job:slo_errors_per_request:ratio_rate6h > (6 * 0.005)
+            and
+              job:slo_errors_per_request:ratio_rate30m > (6 * 0.005)
+          )
+        for: 2m
+        labels:
+          severity: critical
+          slo: availability
+        annotations:
+          summary: "{{ $labels.job }} is burning its availability error budget fast"
+          description: "5xx responses are consuming the 99.5% availability budget fast enough to exhaust a month of it in days. Current 1h error ratio: {{ $value | humanizePercentage }}."
+
+      - alert: AvailabilitySLOSlowBurn
+        expr: |
+          job:slo_errors_per_request:ratio_rate1d > (3 * 0.005)
+          and
+          job:slo_errors_per_request:ratio_rate2h > (3 * 0.005)
+        for: 15m
+        labels:
+          severity: warning
+          slo: availability
+        annotations:
+          summary: "{{ $labels.job }} is steadily burning its availability error budget"
+          description: "A sustained 5xx rate above three times the budget; not an emergency, but the month's budget will not last at this pace."
+
+      - alert: LatencySLOFastBurn
+        expr: |
+          (
+              job:slo_slow_requests:ratio_rate1h > (14.4 * 0.01)
+            and
+              job:slo_slow_requests:ratio_rate5m > (14.4 * 0.01)
+          )
+          or
+          (
+              job:slo_slow_requests:ratio_rate6h > (6 * 0.01)
+            and
+              job:slo_slow_requests:ratio_rate30m > (6 * 0.01)
+          )
+        for: 2m
+        labels:
+          severity: critical
+          slo: latency
+        annotations:
+          summary: "{{ $labels.job }} is burning its latency error budget fast"
+          description: "Requests slower than 0.5s are consuming the 99% latency budget fast enough to exhaust it in days. Current share of slow requests: {{ $value | humanizePercentage }}."
+
+      - alert: LatencySLOSlowBurn
+        expr: |
+          job:slo_slow_requests:ratio_rate1d > (3 * 0.01)
+          and
+          job:slo_slow_requests:ratio_rate2h > (3 * 0.01)
+        for: 15m
+        labels:
+          severity: warning
+          slo: latency
+        annotations:
+          summary: "{{ $labels.job }} is steadily burning its latency error budget"
+          description: "A sustained share of requests over 0.5s; the month's latency budget will not last at this pace."
+
+  # ── Symptoms the SLOs do not cover ─────────────────────────────────────────
   - name: node_app_alerts
     rules:
-
-      # ── App availability ───────────────────────────────────────────────────────
       # Matches both scrape jobs: 'render-app' (the deployed target) and
       # 'node-app' (only present when running locally via docker-compose).
-      #
-      # This previously read job="node-app", which is commented out in
-      # prometheus.yml because 'my-app' is a Compose-only hostname. The
-      # selector matched nothing, so the alert could never fire and Prometheus
-      # reported no error — check `up` in the expression browser after renaming
-      # any job, since a dead selector is silent.
+      # Check `up` in the expression browser after renaming any job: a selector
+      # that matches nothing never fires and Prometheus reports no error.
       - alert: AppDown
         expr: up{job=~"node-app|render-app"} == 0
         for: 1m
@@ -18,48 +141,22 @@ groups:
           severity: critical
         annotations:
           summary: "Node.js app is down ({{ $labels.instance }})"
-          description: "Prometheus cannot scrape {{ $labels.instance }} — the app may have crashed or the deployment is unreachable."
+          description: "Prometheus cannot scrape {{ $labels.instance }}; the app may have crashed or the deployment is unreachable."
 
-      # ── Error rate ─────────────────────────────────────────────────────────────
-      - alert: HighErrorRate
-        expr: |
-          rate(http_requests_total{status_code=~"5.."}[5m])
-          /
-          rate(http_requests_total[5m]) > 0.05
-        for: 2m
-        labels:
-          severity: critical
-        annotations:
-          summary: "High HTTP 5xx error rate"
-          description: "More than 5% of requests are returning 5xx errors."
-
-      # ── Client error rate ──────────────────────────────────────────────────────
+      # 4xx are the caller's errors, so they stay out of the availability SLO,
+      # but a surge usually means a broken client or someone probing for paths.
       - alert: HighClientErrorRate
         expr: |
-          rate(http_requests_total{status_code=~"4.."}[5m])
+          sum by (job) (rate(http_requests_total{status_code=~"4.."}[5m]))
           /
-          rate(http_requests_total[5m]) > 0.1
+          sum by (job) (rate(http_requests_total[5m])) > 0.1
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "High HTTP 4xx error rate"
-          description: "More than 10% of requests are returning 4xx errors — may indicate bad requests or probing."
+          summary: "More than 10% of {{ $labels.job }} requests return 4xx"
+          description: "Usually a client built against a changed contract, or a scanner probing for paths. Current ratio: {{ $value | humanizePercentage }}."
 
-      # ── Latency ────────────────────────────────────────────────────────────────
-      - alert: HighLatencyP99
-        expr: |
-          histogram_quantile(0.99,
-            rate(http_request_duration_seconds_bucket[5m])
-          ) > 1
-        for: 2m
-        labels:
-          severity: warning
-        annotations:
-          summary: "P99 latency exceeds 1 second"
-          description: "99th percentile response time is above 1s — users are experiencing slow responses."
-
-      # ── Memory ─────────────────────────────────────────────────────────────────
       - alert: HighHeapUsage
         expr: |
           nodejs_heap_size_used_bytes
@@ -69,35 +166,35 @@ groups:
         labels:
           severity: warning
         annotations:
-          summary: "Node.js heap usage above 85%"
-          description: "V8 heap is nearly full — risk of out-of-memory crash."
+          summary: "Node.js heap usage above 85% ({{ $labels.instance }})"
+          description: "V8 heap is nearly full; risk of an out-of-memory crash."
 
-      # ── RSS Memory ─────────────────────────────────────────────────────────────
       - alert: HighMemoryRSS
         expr: process_resident_memory_bytes > 200 * 1024 * 1024
         for: 5m
         labels:
           severity: warning
         annotations:
-          summary: "RSS memory above 200MB"
-          description: "Resident memory is unusually high — possible memory leak."
+          summary: "RSS memory above 200MB ({{ $labels.instance }})"
+          description: "Resident memory is unusually high; possible memory leak."
 
-      # ── Event loop ─────────────────────────────────────────────────────────────
       - alert: HighEventLoopLag
         expr: nodejs_eventloop_lag_seconds > 0.1
         for: 2m
         labels:
           severity: warning
         annotations:
-          summary: "Event loop lag above 100ms"
-          description: "The Node.js event loop is blocked — app may be unresponsive."
+          summary: "Event loop lag above 100ms ({{ $labels.instance }})"
+          description: "The Node.js event loop is blocked; the app may be unresponsive."
 
-      # ── Low request rate ───────────────────────────────────────────────────────
+      # Traffic falling off a cliff usually means something upstream broke, and
+      # no error-rate alert can see requests that never arrive. Summed per job:
+      # per series it fired for every quiet route.
       - alert: LowRequestRate
-        expr: rate(http_requests_total[5m]) < 0.01
+        expr: sum by (job) (rate(http_requests_total[5m])) < 0.01
         for: 10m
         labels:
           severity: info
         annotations:
-          summary: "Low request rate detected"
-          description: "Request rate is near zero — app may not be receiving traffic."
+          summary: "{{ $labels.job }} is receiving almost no traffic"
+          description: "Request rate is near zero; check DNS, the load balancer, or whatever sends traffic here."

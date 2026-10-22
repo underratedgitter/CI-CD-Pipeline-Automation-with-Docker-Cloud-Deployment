@@ -231,6 +231,46 @@ jobs:
           exit-code: '0'
           severity: HIGH,CRITICAL
 
+  # ── 4b. Monitoring config ────────────────────────────────────────────────────
+  # Alert rules are code that only runs during an incident, which is the worst
+  # time to find out a selector matches nothing. promtool checks the config and
+  # both rule sets, and unit-tests the deployed rules with synthetic series.
+  observability:
+    name: Validate Monitoring Config
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+
+    env:
+      PROMTOOL: prom/prometheus:v2.54.1@sha256:f6639335d34a77d9d9db382b92eeb7fc00934be8eae81dbc03b31cfe90411a94
+
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check the Prometheus config and its rules
+        run: docker run --rm --entrypoint promtool -v "$PWD/prometheus:/p" -w /p "$PROMTOOL" check config prometheus.yml
+
+      - name: Unit-test the alert rules
+        run: docker run --rm --entrypoint promtool -v "$PWD/prometheus:/p" -w /p "$PROMTOOL" test rules tests/alert_rules_test.yml
+
+      - uses: azure/setup-helm@9bc31f4ebc9c6b171d7bfbaa5d006ae7abdb4310 # v5.0.1
+        with:
+          version: ${{ env.HELM_VERSION }}
+
+      - name: Check the chart's PrometheusRule
+        run: |
+          set -euo pipefail
+          helm template pipeline-app deploy/helm/pipeline-app --namespace pipeline \
+              --set monitoring.prometheusRule.enabled=true \
+              --show-only templates/prometheusrule.yaml \
+            | docker run --rm -i mikefarah/yq:4@sha256:4b3d9475d65571d28cbb19544d3820ec2945e4c8b2f18279394282b8dc3a592e '.spec' \
+            > chart-rules.yml
+          docker run --rm --entrypoint promtool -v "$PWD:/p" -w /p "$PROMTOOL" check rules chart-rules.yml
+
+      - name: Grafana dashboards are valid JSON
+        run: for f in grafana/dashboards/*.json; do python3 -m json.tool "$f" > /dev/null && echo "ok $f"; done
+
   # ── 5. Build and test the image ──────────────────────────────────────────────
   # Runs on pull requests too, so an image that builds but does not start, or a
   # page the CSP breaks, is caught before merge. The tested image is saved, and
@@ -239,7 +279,7 @@ jobs:
     name: Build & Test Image
     runs-on: ubuntu-24.04
     timeout-minutes: 20
-    needs: [test, security, portfolio, chart]
+    needs: [workflows, test, security, portfolio, chart, observability]
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1

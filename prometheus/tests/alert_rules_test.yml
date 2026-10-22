@@ -1,0 +1,205 @@
+# Unit tests for ../alert_rules.yml:
+#   promtool test rules prometheus/tests/alert_rules_test.yml
+# Each alert gets a case where it must fire and one where it must stay quiet.
+# Series are per-minute counters: '0+999x120' climbs by 999 every minute.
+
+rule_files:
+  - ../alert_rules.yml
+
+evaluation_interval: 1m
+
+tests:
+  # ── Regression: one 5xx must not read as a 100% error rate ──────────────────
+  # The old rule divided each 5xx series by itself and paged at 0.1% errors.
+  - name: a 0.1% error rate stays inside the availability budget
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/",status_code="200"}'
+        values: '0+999x120'
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/",status_code="500"}'
+        values: '0+1x120'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: AvailabilitySLOFastBurn
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: AvailabilitySLOSlowBurn
+        exp_alerts: []
+
+  # ── Availability: fast burn pages ───────────────────────────────────────────
+  - name: a sustained 10% error rate pages
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/",status_code="200"}'
+        values: '0+900x120'
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/",status_code="500"}'
+        values: '0+100x120'
+    alert_rule_test:
+      - eval_time: 75m
+        alertname: AvailabilitySLOFastBurn
+        exp_alerts:
+          - exp_labels:
+              job: render-app
+              severity: critical
+              slo: availability
+            exp_annotations:
+              summary: "render-app is burning its availability error budget fast"
+              description: "5xx responses are consuming the 99.5% availability budget fast enough to exhaust a month of it in days. Current 1h error ratio: 10%."
+
+  # ── Availability: slow burn opens a ticket, does not page ───────────────────
+  - name: a steady 2% error rate raises a ticket but does not page
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/",status_code="200"}'
+        values: '0+980x180'
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/",status_code="500"}'
+        values: '0+20x180'
+    alert_rule_test:
+      - eval_time: 150m
+        alertname: AvailabilitySLOFastBurn
+        exp_alerts: []
+      - eval_time: 150m
+        alertname: AvailabilitySLOSlowBurn
+        exp_alerts:
+          - exp_labels:
+              job: render-app
+              severity: warning
+              slo: availability
+            exp_annotations:
+              summary: "render-app is steadily burning its availability error budget"
+              description: "A sustained 5xx rate above three times the budget; not an emergency, but the month's budget will not last at this pace."
+
+  # ── Availability: errors spread across routes still add up ──────────────────
+  - name: errors on different routes are summed before dividing
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/",status_code="200"}'
+        values: '0+450x120'
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/api/status",status_code="200"}'
+        values: '0+450x120'
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/",status_code="500"}'
+        values: '0+50x120'
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/api/status",status_code="503"}'
+        values: '0+50x120'
+    alert_rule_test:
+      - eval_time: 75m
+        alertname: AvailabilitySLOFastBurn
+        exp_alerts:
+          - exp_labels:
+              job: render-app
+              severity: critical
+              slo: availability
+            exp_annotations:
+              summary: "render-app is burning its availability error budget fast"
+              description: "5xx responses are consuming the 99.5% availability budget fast enough to exhaust a month of it in days. Current 1h error ratio: 10%."
+
+  # ── Latency ─────────────────────────────────────────────────────────────────
+  - name: 20% of requests over 0.5s pages on latency
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="render-app",instance="a",method="GET",route="/",status_code="200",le="0.5"}'
+        values: '0+800x120'
+      - series: 'http_request_duration_seconds_count{job="render-app",instance="a",method="GET",route="/",status_code="200"}'
+        values: '0+1000x120'
+    alert_rule_test:
+      - eval_time: 75m
+        alertname: LatencySLOFastBurn
+        exp_alerts:
+          - exp_labels:
+              job: render-app
+              severity: critical
+              slo: latency
+            exp_annotations:
+              summary: "render-app is burning its latency error budget fast"
+              description: "Requests slower than 0.5s are consuming the 99% latency budget fast enough to exhaust it in days. Current share of slow requests: 20%."
+
+  - name: 0.5% of requests over 0.5s is inside the latency budget
+    interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="render-app",instance="a",method="GET",route="/",status_code="200",le="0.5"}'
+        values: '0+995x120'
+      - series: 'http_request_duration_seconds_count{job="render-app",instance="a",method="GET",route="/",status_code="200"}'
+        values: '0+1000x120'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: LatencySLOFastBurn
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: LatencySLOSlowBurn
+        exp_alerts: []
+
+  # ── No traffic: SLO ratios are NaN and must not alert ───────────────────────
+  - name: an idle service does not trip the SLO alerts
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/",status_code="200"}'
+        values: '0x120'
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: AvailabilitySLOFastBurn
+        exp_alerts: []
+      - eval_time: 90m
+        alertname: LowRequestRate
+        exp_alerts:
+          - exp_labels:
+              job: render-app
+              severity: info
+            exp_annotations:
+              summary: "render-app is receiving almost no traffic"
+              description: "Request rate is near zero; check DNS, the load balancer, or whatever sends traffic here."
+
+  - name: quiet routes do not trip LowRequestRate when the service has traffic
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/",status_code="200"}'
+        values: '0+60x60'
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/info",status_code="200"}'
+        values: '0x60'
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: LowRequestRate
+        exp_alerts: []
+
+  # ── Availability of the target itself ───────────────────────────────────────
+  - name: an unscrapeable target pages after a minute
+    interval: 1m
+    input_series:
+      - series: 'up{job="render-app",instance="ci-cd-pipeline-automation-app.onrender.com:443"}'
+        values: '1 1 1 0 0 0 0'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: AppDown
+        exp_alerts: []
+      - eval_time: 6m
+        alertname: AppDown
+        exp_alerts:
+          - exp_labels:
+              job: render-app
+              instance: ci-cd-pipeline-automation-app.onrender.com:443
+              severity: critical
+            exp_annotations:
+              summary: "Node.js app is down (ci-cd-pipeline-automation-app.onrender.com:443)"
+              description: "Prometheus cannot scrape ci-cd-pipeline-automation-app.onrender.com:443; the app may have crashed or the deployment is unreachable."
+
+  # ── 4xx ─────────────────────────────────────────────────────────────────────
+  - name: 20% 4xx raises a warning; 5% does not
+    interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="/",status_code="200"}'
+        values: '0+800x30'
+      - series: 'http_requests_total{job="render-app",instance="a",method="GET",route="unmatched",status_code="404"}'
+        values: '0+200x30'
+      - series: 'http_requests_total{job="node-app",instance="b",method="GET",route="/",status_code="200"}'
+        values: '0+950x30'
+      - series: 'http_requests_total{job="node-app",instance="b",method="GET",route="unmatched",status_code="404"}'
+        values: '0+50x30'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: HighClientErrorRate
+        exp_alerts:
+          - exp_labels:
+              job: render-app
+              severity: warning
+            exp_annotations:
+              summary: "More than 10% of render-app requests return 4xx"
+              description: "Usually a client built against a changed contract, or a scanner probing for paths. Current ratio: 20%."
