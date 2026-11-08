@@ -3,3 +3,6 @@ npm-debug.log*
 .env
 .DS_Store
 coverage/
+
+# Local tool files
+.commandcode/
