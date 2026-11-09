@@ -243,7 +243,7 @@ jobs:
     env:
       # The same Prometheus version Dockerfile.prometheus deploys, so the rules
       # are checked and tested by the engine that will evaluate them.
-      PROMTOOL: prom/prometheus:v3.16.0@sha256:efd719c99d83b060d9daefdcf00360461adf279f45ef5391f8d111892118753e
+      PROMTOOL: prom/prometheus:v3.16.0@sha256:89c1a644817e9ad70fa2af76c84898e327c1de7063735f962e8313b1e28672c3
 
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
