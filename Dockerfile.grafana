@@ -1,4 +1,4 @@
-FROM grafana/grafana:13.2.4
+FROM grafana/grafana:13.3.0
 
 # Where the provisioned datasource points unless the platform overrides it
 # (Render sets PROMETHEUS_URL to its Prometheus service).
