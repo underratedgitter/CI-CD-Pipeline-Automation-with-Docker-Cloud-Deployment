@@ -14,7 +14,7 @@ What each change goes through before it is live:
 - **Tested where it runs.** The image is started and probed from outside, the portfolio is rendered in headless Chrome under the real Content-Security-Policy, and the chart is installed on a three-node kind cluster where every pod is replaced while a client calls the Service; one dropped request fails the build.
 - **Signed and attested.** The image that passed is the image that ships, with signed SLSA build provenance and an SBOM attached in the registry, verifiable by anyone.
 - **Secured end to end.** CodeQL, Trivy, Dependabot, OpenSSF Scorecard, npm signature verification, SHA-pinned actions and linted workflows.
-- **Observed by objectives.** Availability and latency SLOs with multi-window, multi-burn-rate alerts, and unit tests for every alert rule.
+- **Observed by objectives.** Availability and latency SLOs with multi-window, multi-burn-rate alerts, and promtool unit tests for the alert rules.
 
 ---
 
@@ -202,7 +202,11 @@ and `LowRequestRate`, because no error-rate alert can see requests that never
 arrive.
 
 **The rules are unit-tested.** `prometheus/tests/alert_rules_test.yml` feeds
-`promtool` synthetic series and checks every alert both fires and stays quiet.
+`promtool` synthetic series; the SLO burn-rate alerts, `AppDown`,
+`HighClientErrorRate` and `LowRequestRate` each have cases that make them fire
+and cases that must keep them quiet. The three resource thresholds
+(`HighHeapUsage`, `HighMemoryRSS`, `HighEventLoopLag`) are checked by `promtool
+check rules` but have no synthetic-series tests yet.
 It exists because the previous rules divided each 5xx series by itself, which
 reads 100% after a single error: a critical page at a 0.1% error rate. That case
 is now a regression test.
@@ -214,7 +218,7 @@ is now a regression test.
 | Route | Returns |
 |---|---|
 | `GET /` | the portfolio site (static files from `portfolio/dist`) |
-| `GET /api/status` | service name, version, revision, environment |
+| `GET /api/status` | status, version, revision, environment |
 | `GET /health` | liveness, with uptime and memory |
 | `GET /ready` | readiness, for orchestrator gating |
 | `GET /metrics` | Prometheus exposition format |
@@ -356,9 +360,13 @@ pinned at max replicas — and two of them are rewritten for the new environment
 ### Deploying to a real cluster
 
 Base64 a kubeconfig into `KUBE_CONFIG`, set `K8S_NAMESPACE` and `APP_URL` as
-repository variables, and the pipeline takes it from there. Infrastructure to run
-it on — VPC, cluster, load balancer, registry, IAM — is Terraform in
-[terraform-aws-ecs-platform](https://github.com/underratedgitter/terraform-aws-ecs-platform).
+repository variables, and the pipeline takes it from there: it installs the
+chart on whatever cluster that kubeconfig points at, which is provisioned
+outside this pipeline. The service's own AWS infrastructure — VPC, ECS
+cluster, load balancer, registry, IAM — is Terraform in
+[terraform-aws-ecs-platform](https://github.com/underratedgitter/terraform-aws-ecs-platform),
+a separate project that deploys this app as an ECS task rather than a
+Kubernetes workload.
 
 ---
 
@@ -390,7 +398,7 @@ tests/                        jest + supertest suites
   workflows/codeql.yml        static analysis of the code and the workflows
   workflows/scorecard.yml     OpenSSF Scorecard
   workflows/uptime-check.yml  hourly backup check of the live app
-  dependabot.yml              actions, npm and Docker updates, with a cooldown
+  dependabot.yml              actions, npm, Docker and Compose updates, with a cooldown
 render.yaml                   deploy target
 ```
 
